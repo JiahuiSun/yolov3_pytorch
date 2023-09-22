@@ -3,6 +3,8 @@ import torch as T
 import math
 import numpy as np
 from util.decode import decode 
+from torch import nn
+
 
 def bbox_ciou(boxes1, boxes2):
     '''
@@ -172,18 +174,21 @@ def yolo_loss(args, num_classes, iou_loss_thresh, anchors, alpha_1, alpha_2, alp
     true_sbboxes = args[6]   # (?, 150, 4)
     true_mbboxes = args[7]   # (?, 150, 4)
     true_lbboxes = args[8]   # (?, 150, 4)
+    # TODO: 这里decode是什么操作？
     pred_sbbox = decode(conv_sbbox, anchors[0], 8)
     pred_mbbox = decode(conv_mbbox, anchors[1], 16)
     pred_lbbox = decode(conv_lbbox, anchors[2], 32)
+    # TODO: 这里就是具体计算Loss了，细看
     loss_sbbox = loss_layer(conv_sbbox, pred_sbbox, label_sbbox, true_sbboxes, 8, num_classes, iou_loss_thresh, alpha=alpha_1)
     loss_mbbox = loss_layer(conv_mbbox, pred_mbbox, label_mbbox, true_mbboxes, 16, num_classes, iou_loss_thresh, alpha=alpha_2)
     loss_lbbox = loss_layer(conv_lbbox, pred_lbbox, label_lbbox, true_lbboxes, 32, num_classes, iou_loss_thresh, alpha=alpha_3)
     print('sbbox: ',loss_sbbox,' mbbox: ',loss_mbbox,' lbbox: ',loss_lbbox)
     return loss_sbbox + loss_mbbox + loss_lbbox
 
-class YoloLoss(torch.nn.Module):
+
+class YOLOLoss(nn.Module):
     def __init__(self, num_classes, iou_loss_thresh, anchors, alpha_1, alpha_2, alpha_3):
-        super(YoloLoss, self).__init__()
+        super().__init__()
         self.num_classes = num_classes
         self.iou_loss_thresh = iou_loss_thresh
         self.anchors = anchors

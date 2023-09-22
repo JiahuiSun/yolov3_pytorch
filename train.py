@@ -7,8 +7,8 @@ import threading
 import numpy as np
 import os
 import platform
-from model.model import Darknet
-from util.loss import YoloLoss
+from model.model import YOLOv3
+from util.loss import YOLOLoss
 from multiprocessing.dummy import Pool as ThreadPool
 from multiprocessing.pool import ThreadPool
 import torch.multiprocessing as mp
@@ -121,24 +121,29 @@ def random_translate(image, bboxes):
 
 def parse_annotation(annotation, train_input_size, annotation_type):
     line = annotation.split()
-    image_path = "E:\yolov3_pytorch\\annotation\data_parallel\images" + '\\' + line[0]
+    image_path = "./annotation/data_parallel/images/" + line[0]
+    print('image_path', image_path)
     # image_path = '../'+line[0]
     if not os.path.exists(image_path):
         raise KeyError("%s does not exist ... " % image_path)
     image = np.array(cv2.imread(image_path))
     # 没有标注物品，即每个格子都当作背景处理
+    # TODO: 这个变量是什么意思？没有标注物体，也就是这张图片中没有物体，哦确实存在这种现象
     exist_boxes = True
     if len(line) == 1:
         bboxes = np.array([[10, 10, 101, 103, 0]])
         exist_boxes = False
     else:
+        # TODO: 这里为啥都取整了？原数据集中的值是啥含义？没必要取整
         bboxes = np.array([list(map(lambda x: int(float(x)), box.split(','))) for box in line[1:]])
         bboxes = bboxes.transpose(1,0)
+    # TODO: 这里是在做数据增强吗？有必要吗？
     if annotation_type == 'train':
         # image, bboxes = random_fill(np.copy(image), np.copy(bboxes))    # 数据集缺乏小物体时打开
         image, bboxes = random_horizontal_flip(np.copy(image), np.copy(bboxes))
         image, bboxes = random_crop(np.copy(image), np.copy(bboxes))
         image, bboxes = random_translate(np.copy(image), np.copy(bboxes))
+    # TODO: 为什么要缩放啊？我训练和测试可以固定图片大小的啊
     image, bboxes = image_preporcess(np.copy(image), [train_input_size, train_input_size], np.copy(bboxes))
     return image, bboxes, exist_boxes
 
@@ -159,19 +164,22 @@ def bbox_iou_data(boxes1, boxes2):
     return inter_area / union_area
 
 def preprocess_true_boxes(bboxes, train_output_sizes, strides, num_classes, max_bbox_per_scale, anchors):
+    # TODO: 也就是说，输入和输出都是矩形？为什么不能保持长方形呢？
+    # 想知道现在返回的东西都是些什么？
     label = [np.zeros((train_output_sizes[i], train_output_sizes[i], 3,
                        5 + num_classes)) for i in range(3)]
     bboxes_xywh = [np.zeros((max_bbox_per_scale, 4)) for _ in range(3)]
     bbox_count = np.zeros((3,))
+    # 遍历ground truth
     for bbox in bboxes:
         bbox_coor = bbox[:4]
         bbox_class_ind = bbox[4]
-        onehot = np.zeros(num_classes, dtype=np.float)
+        onehot = np.zeros(num_classes, dtype=np.float32)
         onehot[bbox_class_ind] = 1.0
         bbox_xywh = np.concatenate([(bbox_coor[2:] + bbox_coor[:2]) * 0.5, bbox_coor[2:] - bbox_coor[:2]], axis=-1)
         bbox_xywh_scaled = 1.0 * bbox_xywh[np.newaxis, :] / strides[:, np.newaxis]
         iou = []
-        for i in range(3):
+        for i in range(3):  # anchor
             anchors_xywh = np.zeros((3, 4))
             anchors_xywh[:, 0:2] = np.floor(bbox_xywh_scaled[i, 0:2]).astype(np.int32) + 0.5
             anchors_xywh[:, 2:4] = anchors[i]
@@ -214,16 +222,23 @@ def multi_thread_read(batch, num, train_input_size, annotation_type, train_outpu
         batch_lbboxes[num, :, :] = lbboxes
 
 def generate_one_batch(annotation_lines, step, batch_size, anchors, num_classes, max_bbox_per_scale, annotation_type):
+    """
+    数据生成这的逻辑是什么？应该是怎样的？
+    样例：
+    对每个batch中的样本：
+        对每个
+    """
     n = len(annotation_lines)
 
     # 多尺度训练
+    # TODO: 为啥要多尺度训练啊？我训练和测试的输入图片大小都是一样的，是为了提高鲁棒性、泛化性吗？
     train_input_sizes = [320, 352, 384, 416, 448, 480, 512, 544, 576, 608]
     train_input_size = random.choice(train_input_sizes)
     strides = np.array([8, 16, 32])
 
     # 输出的网格数
     train_output_sizes = train_input_size // strides
-
+    # 这里是训练用的label，如果有多个物体可以解决吗？
     batch_image = np.zeros((batch_size, train_input_size, train_input_size, 3))
 
     batch_label_sbbox = np.zeros((batch_size, train_output_sizes[0], train_output_sizes[0],
@@ -241,7 +256,13 @@ def generate_one_batch(annotation_lines, step, batch_size, anchors, num_classes,
         batch = annotation_lines[n - batch_size:n]
     else:
         batch = annotation_lines[step * batch_size:(step + 1) * batch_size]
-    threads = []
+    threads = []  # 你总共就6张图片，还要开6个进程来读取？不止读取，还要做一些预处理，比如解析bbox
+    # FIXME: 这里是多线程读数据，为啥要这样操作？
+    # 1. 创建一个dataset类，然后用pytorch自带的loader不行吗？那么要搞清楚，这里到底需要什么label，做什么处理才能加载这些数据
+    # 2. 一次性把所有图片加载到内存可以吗？
+    # 为啥要改？因为我觉的不合理？总共就几张图片，非要多进程来读取？而且要反复读取？一次性加载不行吗？这样很浪费时间的
+
+    # TODO: 每次训练，都要重新读取数据，解析label，为什么不一次性干完，然后只需要读取就行了？
     for num in range(batch_size):
         t = threading.Thread(target=multi_thread_read, args=(batch, num, train_input_size, annotation_type, train_output_sizes, strides, num_classes, max_bbox_per_scale, anchors, batch_image,
                       batch_label_sbbox, batch_label_mbbox, batch_label_lbbox,
@@ -254,8 +275,6 @@ def generate_one_batch(annotation_lines, step, batch_size, anchors, num_classes,
     batch_image = batch_image.transpose(0, 3, 1, 2)
     return batch_image, [batch_label_sbbox, batch_label_mbbox, batch_label_lbbox, batch_sbboxes, batch_mbboxes,
                          batch_lbboxes]
-
-    
 
 
 if __name__ == '__main__':
@@ -279,14 +298,6 @@ if __name__ == '__main__':
     val_path = args.val_path
     classes_path = args.classes_path
     weight_path = args.weight_path
-
-    #train_path = 'annotation/coco2017_train.txt'
-    #val_path = 'annotation/coco2017_val.txt'
-    #classes_path = 'data/coco_classes.txt'
-
-    #train_path = 'annotation/voc2012_train.txt'
-    #val_path = 'annotation/voc2012_val.txt'
-    #classes_path = 'data/voc_classes.txt'
 
     class_names = get_classes(classes_path)
     num_classes = len(class_names)
@@ -323,7 +334,7 @@ if __name__ == '__main__':
     # 初始卷积核个数
     initial_filters = 8 
 
-    net = Darknet(num_classes, initial_filters=initial_filters) # initialize the model
+    net = YOLOv3(num_classes, initial_filters=initial_filters) # initialize the model
     device = torch.device('cuda' if use_cuda else 'cpu')
     net_img = net.to(device)
 
@@ -363,7 +374,7 @@ if __name__ == '__main__':
     summary(net_img, (3, 416, 416)) # 416,416 / 320,320
 
     # 建立损失函数
-    yolo_loss = YoloLoss(num_classes, iou_loss_thresh, anchors, alpha_1, alpha_2, alpha_3)
+    yolo_loss = YOLOLoss(num_classes, iou_loss_thresh, anchors, alpha_1, alpha_2, alpha_3)
     if use_cuda:
         yolo_loss = yolo_loss.cuda()  # 如果有gpu可用，损失函数存放在gpu显存里
         net = net.cuda()  # 如果有gpu可用，模型（包括了权重weight）存放在gpu显存里
@@ -396,7 +407,6 @@ if __name__ == '__main__':
 
         # 训练阶段
         for step in range(train_steps):
-
             batch_image, lables = generate_one_batch(train_lines, step, batch_size, anchors, num_classes,
                                                     max_bbox_per_scale, 'train')
             if use_cuda:
