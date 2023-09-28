@@ -48,43 +48,16 @@ def train(args):
                             [[30, 61], [62, 45], [59, 119]],
                             [[116, 90], [156, 198], [373, 326]]])
 
-    # loss function and optimizer
     Loss1 = YOLOLayer(anchors[2], num_classes, img_dim=args.img_size)
     Loss2 = YOLOLayer(anchors[1], num_classes, img_dim=args.img_size)
     Loss3 = YOLOLayer(anchors[0], num_classes, img_dim=args.img_size)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     for epoch in tqdm(range(args.epochs)):
-        loss1_list = {
-            'loss_x': [],
-            'loss_y': [],
-            'loss_w': [],
-            'loss_h': [],
-            'loss_conf': [],
-            'loss_cls': []
-        }
-        loss2_list = {
-            'loss_x': [],
-            'loss_y': [],
-            'loss_w': [],
-            'loss_h': [],
-            'loss_conf': [],
-            'loss_cls': []
-        }
-        loss3_list = {
-            'loss_x': [],
-            'loss_y': [],
-            'loss_w': [],
-            'loss_h': [],
-            'loss_conf': [],
-            'loss_cls': []
-        }
-
+        train_loss_list = []
         train_annotations, train_detections = [], []
         model.train()
         for _, imgs, targets in train_dataloader:
-            # imgs: [B, 3, 416, 416]
-            # targets: [B, 50, 5]
             optimizer.zero_grad()
             imgs = imgs.to(args.device)
             targets = targets.to(args.device)
@@ -92,76 +65,41 @@ def train(args):
             loss1_dict, pred_bbox1 = Loss1(y1, targets)
             loss2_dict, pred_bbox2 = Loss2(y2, targets)
             loss3_dict, pred_bbox3 = Loss3(y3, targets)
-            loss = loss1_dict[0] + loss2_dict[0] + loss3_dict[0]
-            loss.backward()
+            train_loss = loss1_dict[0] + loss2_dict[0] + loss3_dict[0]
+            train_loss.backward()
             optimizer.step()
+            train_loss_list.append(train_loss.item())
 
             pred = torch.cat((pred_bbox1.data, pred_bbox2.data, pred_bbox3.data), dim=1)
             batch_detections, batch_annotations = get_detection_annotation(pred, targets, args.conf_thres, args.nms_thres, num_classes, args.img_size)
             train_detections += batch_detections
             train_annotations += batch_annotations
-
-            loss1_list['loss_x'].append(loss1_dict[1])
-            loss1_list['loss_y'].append(loss1_dict[2])
-            loss1_list['loss_w'].append(loss1_dict[3])
-            loss1_list['loss_h'].append(loss1_dict[4])
-            loss1_list['loss_conf'].append(loss1_dict[5])
-            loss1_list['loss_cls'].append(loss1_dict[6])
-
-            loss2_list['loss_x'].append(loss2_dict[1])
-            loss2_list['loss_y'].append(loss2_dict[2])
-            loss2_list['loss_w'].append(loss2_dict[3])
-            loss2_list['loss_h'].append(loss2_dict[4])
-            loss2_list['loss_conf'].append(loss2_dict[5])
-            loss2_list['loss_cls'].append(loss2_dict[6])
-
-            loss3_list['loss_x'].append(loss3_dict[1])
-            loss3_list['loss_y'].append(loss3_dict[2])
-            loss3_list['loss_w'].append(loss3_dict[3])
-            loss3_list['loss_h'].append(loss3_dict[4])
-            loss3_list['loss_conf'].append(loss3_dict[5])
-            loss3_list['loss_cls'].append(loss3_dict[6])
         train_average_precisions = compute_mAP(train_detections, train_annotations, num_classes, args.iou_thres)
 
-        model.eval()
+        val_loss_list = []
         val_annotations, val_detections = [], []
+        model.eval()
         for _, imgs, targets in val_dataloader:
             imgs = imgs.to(args.device)
             targets = targets.to(args.device)
             with torch.no_grad():
                 y1, y2, y3 = model(imgs)
-                pred_bbox1 = Loss1(y1)
-                pred_bbox2 = Loss2(y2)
-                pred_bbox3 = Loss3(y3)
+                loss1_dict, pred_bbox1 = Loss1(y1, targets)
+                loss2_dict, pred_bbox2 = Loss2(y2, targets)
+                loss3_dict, pred_bbox3 = Loss3(y3, targets)
                 pred = torch.cat((pred_bbox1, pred_bbox2, pred_bbox3), dim=1)
+            val_loss = loss1_dict[0] + loss2_dict[0] + loss3_dict[0]
+            val_loss_list.append(val_loss.item())
             batch_detections, batch_annotations = get_detection_annotation(pred, targets, args.conf_thres, args.nms_thres, num_classes, args.img_size)
             val_detections += batch_detections
             val_annotations += batch_annotations
         val_average_precisions = compute_mAP(val_detections, val_annotations, num_classes, args.iou_thres)
 
-        # log everything and save model
         wandb.log({
             'mAP_train': train_average_precisions[0],
             'mAP_val': val_average_precisions[0],
-            'loss': loss.item(),
-            'loss_x_featmap1': np.mean(loss1_list['loss_x']),
-            'loss_y_featmap1': np.mean(loss1_list['loss_y']),
-            'loss_w_featmap1': np.mean(loss1_list['loss_w']),
-            'loss_h_featmap1': np.mean(loss1_list['loss_h']),
-            'loss_conf_featmap1': np.mean(loss1_list['loss_conf']),
-            'loss_cls_featmap1': np.mean(loss1_list['loss_cls']),
-            'loss_x_featmap2': np.mean(loss2_list['loss_x']),
-            'loss_y_featmap2': np.mean(loss2_list['loss_y']),
-            'loss_w_featmap2': np.mean(loss2_list['loss_w']),
-            'loss_h_featmap2': np.mean(loss2_list['loss_h']),
-            'loss_conf_featmap2': np.mean(loss2_list['loss_conf']),
-            'loss_cls_featmap2': np.mean(loss2_list['loss_cls']),
-            'loss_x_featmap3': np.mean(loss3_list['loss_x']),
-            'loss_y_featmap3': np.mean(loss3_list['loss_y']),
-            'loss_w_featmap3': np.mean(loss3_list['loss_w']),
-            'loss_h_featmap3': np.mean(loss3_list['loss_h']),
-            'loss_conf_featmap3': np.mean(loss3_list['loss_conf']),
-            'loss_cls_featmap3': np.mean(loss3_list['loss_cls'])
+            'train_loss': np.mean(train_loss_list),
+            'val_loss': np.mean(val_loss_list)
         })
         if (epoch+1) % args.save_freq == 0:
             torch.save(model.state_dict(), os.path.join(args.model_dir, f'model-{epoch}.pth'))
