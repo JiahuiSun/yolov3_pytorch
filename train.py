@@ -1,525 +1,228 @@
-import cv2
-import sys
-import time
-import torch
-import random
-import threading
-import numpy as np
 import os
-import platform
-from model.model import YOLOv3
-from util.loss import YOLOLoss
-from multiprocessing.dummy import Pool as ThreadPool
-from multiprocessing.pool import ThreadPool
-import torch.multiprocessing as mp
 import argparse
+import torch
+import time
+from torchsummary import summary
+from tqdm import tqdm
+import wandb
+import numpy as np
+import pickle
 
-sysstr = platform.system()
-use_cuda = torch.cuda.is_available()
-print(torch.cuda.is_available())
-print(torch.__version__)
-# 禁用cudnn就能解决Windows报错问题。Windows用户如果删掉之后不报CUDNN_STATUS_EXECUTION_FAILED，那就可以删掉。
-if sysstr == 'Windows':
-    torch.backends.cudnn.enabled = False
-
-
-def get_classes(classes_path):
-    with open(classes_path) as f:
-        class_names = f.readlines()
-    class_names = [c.strip() for c in class_names]
-    return class_names
-
-def training_transform(height, width, output_height, output_width):
-    height_scale, width_scale = output_height / height, output_width / width
-    scale = min(height_scale, width_scale)
-    resize_height, resize_width = round(height * scale), round(width * scale)
-    pad_top = (output_height - resize_height) // 2
-    pad_left = (output_width - resize_width) // 2
-    A = np.float32([[scale, 0.0], [0.0, scale]])
-    B = np.float32([[pad_left], [pad_top]])
-    M = np.hstack([A, B])
-    return M, output_height, output_width
-
-def image_preporcess(image, target_size, gt_boxes=None):
-    # 这里改变了一部分原作者的代码。可以发现，传入训练的图片是bgr格式
-    ih, iw = target_size
-    print("target shape: ",ih,iw)
-    h, w = image.shape[:2]
-    print("image shape: ",h,w)
-    M, h_out, w_out = training_transform(h, w, ih, iw)
-    # 填充黑边缩放
-    letterbox = cv2.warpAffine(image, M, (w_out, h_out))
-    pimage = np.float32(letterbox) / 255.
-    if gt_boxes is None:
-        return pimage
-    else:
-        scale = min(iw / w, ih / h)
-        nw, nh = int(scale * w), int(scale * h)
-        dw, dh = (iw - nw) // 2, (ih - nh) // 2
-        gt_boxes[:, [0, 2]] = gt_boxes[:, [0, 2]] * scale + dw
-        gt_boxes[:, [1, 3]] = gt_boxes[:, [1, 3]] * scale + dh
-        return pimage, gt_boxes
-
-def random_fill(image, bboxes):
-    if random.random() < 0.5:
-        h, w, _ = image.shape
-        # 水平方向填充黑边，以训练小目标检测
-        if random.random() < 0.5:
-            dx = random.randint(int(0.5 * w), int(1.5 * w))
-            black_1 = np.zeros((h, dx, 3), dtype='uint8')
-            black_2 = np.zeros((h, dx, 3), dtype='uint8')
-            image = np.concatenate([black_1, image, black_2], axis=1)
-            bboxes[:, [0, 2]] += dx
-        # 垂直方向填充黑边，以训练小目标检测
-        else:
-            dy = random.randint(int(0.5 * h), int(1.5 * h))
-            black_1 = np.zeros((dy, w, 3), dtype='uint8')
-            black_2 = np.zeros((dy, w, 3), dtype='uint8')
-            image = np.concatenate([black_1, image, black_2], axis=0)
-            bboxes[:, [1, 3]] += dy
-    return image, bboxes
-
-def random_horizontal_flip(image, bboxes):
-    if random.random() < 0.5:
-        _, w, _ = image.shape
-        image = image[:, ::-1, :]
-        bboxes[:, [0, 2]] = w - bboxes[:, [2, 0]]
-    return image, bboxes
-
-def random_crop(image, bboxes):
-    if random.random() < 0.5:
-        h, w, _ = image.shape
-        max_bbox = np.concatenate([np.min(bboxes[:, 0:2], axis=0), np.max(bboxes[:, 2:4], axis=0)], axis=-1)
-        max_l_trans = max_bbox[0]
-        max_u_trans = max_bbox[1]
-        max_r_trans = w - max_bbox[2]
-        max_d_trans = h - max_bbox[3]
-        crop_xmin = max(0, int(max_bbox[0] - random.uniform(0, max_l_trans)))
-        crop_ymin = max(0, int(max_bbox[1] - random.uniform(0, max_u_trans)))
-        crop_xmax = max(w, int(max_bbox[2] + random.uniform(0, max_r_trans)))
-        crop_ymax = max(h, int(max_bbox[3] + random.uniform(0, max_d_trans)))
-        image = image[crop_ymin: crop_ymax, crop_xmin: crop_xmax]
-        bboxes[:, [0, 2]] = bboxes[:, [0, 2]] - crop_xmin
-        bboxes[:, [1, 3]] = bboxes[:, [1, 3]] - crop_ymin
-    return image, bboxes
-
-def random_translate(image, bboxes):
-    if random.random() < 0.5:
-        h, w, _ = image.shape
-        max_bbox = np.concatenate([np.min(bboxes[:, 0:2], axis=0), np.max(bboxes[:, 2:4], axis=0)], axis=-1)
-        max_l_trans = max_bbox[0]
-        max_u_trans = max_bbox[1]
-        max_r_trans = w - max_bbox[2]
-        max_d_trans = h - max_bbox[3]
-        tx = random.uniform(-(max_l_trans - 1), (max_r_trans - 1))
-        ty = random.uniform(-(max_u_trans - 1), (max_d_trans - 1))
-        M = np.array([[1, 0, tx], [0, 1, ty]])
-        image = cv2.warpAffine(image, M, (w, h))
-        bboxes[:, [0, 2]] = bboxes[:, [0, 2]] + tx
-        bboxes[:, [1, 3]] = bboxes[:, [1, 3]] + ty
-    return image, bboxes
-
-def parse_annotation(annotation, train_input_size, annotation_type):
-    line = annotation.split()
-    image_path = "./annotation/data_parallel/images/" + line[0]
-    print('image_path', image_path)
-    # image_path = '../'+line[0]
-    if not os.path.exists(image_path):
-        raise KeyError("%s does not exist ... " % image_path)
-    image = np.array(cv2.imread(image_path))
-    # 没有标注物品，即每个格子都当作背景处理
-    # TODO: 这个变量是什么意思？没有标注物体，也就是这张图片中没有物体，哦确实存在这种现象
-    exist_boxes = True
-    if len(line) == 1:
-        bboxes = np.array([[10, 10, 101, 103, 0]])
-        exist_boxes = False
-    else:
-        # TODO: 这里为啥都取整了？原数据集中的值是啥含义？没必要取整
-        bboxes = np.array([list(map(lambda x: int(float(x)), box.split(','))) for box in line[1:]])
-        bboxes = bboxes.transpose(1,0)
-    # TODO: 这里是在做数据增强吗？有必要吗？
-    if annotation_type == 'train':
-        # image, bboxes = random_fill(np.copy(image), np.copy(bboxes))    # 数据集缺乏小物体时打开
-        image, bboxes = random_horizontal_flip(np.copy(image), np.copy(bboxes))
-        image, bboxes = random_crop(np.copy(image), np.copy(bboxes))
-        image, bboxes = random_translate(np.copy(image), np.copy(bboxes))
-    # TODO: 为什么要缩放啊？我训练和测试可以固定图片大小的啊
-    image, bboxes = image_preporcess(np.copy(image), [train_input_size, train_input_size], np.copy(bboxes))
-    return image, bboxes, exist_boxes
-
-def bbox_iou_data(boxes1, boxes2):
-    boxes1 = np.array(boxes1)
-    boxes2 = np.array(boxes2)
-    boxes1_area = boxes1[..., 2] * boxes1[..., 3]
-    boxes2_area = boxes2[..., 2] * boxes2[..., 3]
-    boxes1 = np.concatenate([boxes1[..., :2] - boxes1[..., 2:] * 0.5,
-                             boxes1[..., :2] + boxes1[..., 2:] * 0.5], axis=-1)
-    boxes2 = np.concatenate([boxes2[..., :2] - boxes2[..., 2:] * 0.5,
-                             boxes2[..., :2] + boxes2[..., 2:] * 0.5], axis=-1)
-    left_up = np.maximum(boxes1[..., :2], boxes2[..., :2])
-    right_down = np.minimum(boxes1[..., 2:], boxes2[..., 2:])
-    inter_section = np.maximum(right_down - left_up, 0.0)
-    inter_area = inter_section[..., 0] * inter_section[..., 1]
-    union_area = boxes1_area + boxes2_area - inter_area
-    return inter_area / union_area
-
-def preprocess_true_boxes(bboxes, train_output_sizes, strides, num_classes, max_bbox_per_scale, anchors):
-    # TODO: 也就是说，输入和输出都是矩形？为什么不能保持长方形呢？
-    # 想知道现在返回的东西都是些什么？
-    label = [np.zeros((train_output_sizes[i], train_output_sizes[i], 3,
-                       5 + num_classes)) for i in range(3)]
-    bboxes_xywh = [np.zeros((max_bbox_per_scale, 4)) for _ in range(3)]
-    bbox_count = np.zeros((3,))
-    # 遍历ground truth
-    for bbox in bboxes:
-        bbox_coor = bbox[:4]
-        bbox_class_ind = bbox[4]
-        onehot = np.zeros(num_classes, dtype=np.float32)
-        onehot[bbox_class_ind] = 1.0
-        bbox_xywh = np.concatenate([(bbox_coor[2:] + bbox_coor[:2]) * 0.5, bbox_coor[2:] - bbox_coor[:2]], axis=-1)
-        bbox_xywh_scaled = 1.0 * bbox_xywh[np.newaxis, :] / strides[:, np.newaxis]
-        iou = []
-        for i in range(3):  # anchor
-            anchors_xywh = np.zeros((3, 4))
-            anchors_xywh[:, 0:2] = np.floor(bbox_xywh_scaled[i, 0:2]).astype(np.int32) + 0.5
-            anchors_xywh[:, 2:4] = anchors[i]
-            iou_scale = bbox_iou_data(bbox_xywh_scaled[i][np.newaxis, :], anchors_xywh)
-            iou.append(iou_scale)
-        best_anchor_ind = np.argmax(np.array(iou).reshape(-1), axis=-1)
-        best_detect = int(best_anchor_ind / 3)
-        best_anchor = int(best_anchor_ind % 3)
-        xind, yind = np.floor(bbox_xywh_scaled[best_detect, 0:2]).astype(np.int32)
-        # 防止越界
-        grid_r = label[best_detect].shape[0]
-        grid_c = label[best_detect].shape[1]
-        xind = max(0, xind)
-        yind = max(0, yind)
-        xind = min(xind, grid_r - 1)
-        yind = min(yind, grid_c - 1)
-        label[best_detect][yind, xind, best_anchor, :] = 0
-        label[best_detect][yind, xind, best_anchor, 0:4] = bbox_xywh
-        label[best_detect][yind, xind, best_anchor, 4:5] = 1.0
-        label[best_detect][yind, xind, best_anchor, 5:] = onehot
-        bbox_ind = int(bbox_count[best_detect] % max_bbox_per_scale)
-        bboxes_xywh[best_detect][bbox_ind, :4] = bbox_xywh
-        bbox_count[best_detect] += 1
-    label_sbbox, label_mbbox, label_lbbox = label
-    sbboxes, mbboxes, lbboxes = bboxes_xywh
-    return label_sbbox, label_mbbox, label_lbbox, sbboxes, mbboxes, lbboxes
-
-def multi_thread_read(batch, num, train_input_size, annotation_type, train_output_sizes, strides, num_classes, max_bbox_per_scale, anchors, batch_image,
-                      batch_label_sbbox, batch_label_mbbox, batch_label_lbbox,
-                      batch_sbboxes, batch_mbboxes, batch_lbboxes):
-    image, bboxes, exist_boxes = parse_annotation(batch[num], train_input_size, annotation_type)
-    label_sbbox, label_mbbox, label_lbbox, sbboxes, mbboxes, lbboxes = preprocess_true_boxes(bboxes, train_output_sizes, strides, num_classes, max_bbox_per_scale, anchors)
-    batch_image[num, :, :, :] = image
-    if exist_boxes:
-        batch_label_sbbox[num, :, :, :, :] = label_sbbox
-        batch_label_mbbox[num, :, :, :, :] = label_mbbox
-        batch_label_lbbox[num, :, :, :, :] = label_lbbox
-        batch_sbboxes[num, :, :] = sbboxes
-        batch_mbboxes[num, :, :] = mbboxes
-        batch_lbboxes[num, :, :] = lbboxes
-
-def generate_one_batch(annotation_lines, step, batch_size, anchors, num_classes, max_bbox_per_scale, annotation_type):
-    """
-    数据生成这的逻辑是什么？应该是怎样的？
-    样例：
-    对每个batch中的样本：
-        对每个
-    """
-    n = len(annotation_lines)
-
-    # 多尺度训练
-    # TODO: 为啥要多尺度训练啊？我训练和测试的输入图片大小都是一样的，是为了提高鲁棒性、泛化性吗？
-    train_input_sizes = [320, 352, 384, 416, 448, 480, 512, 544, 576, 608]
-    train_input_size = random.choice(train_input_sizes)
-    strides = np.array([8, 16, 32])
-
-    # 输出的网格数
-    train_output_sizes = train_input_size // strides
-    # 这里是训练用的label，如果有多个物体可以解决吗？
-    batch_image = np.zeros((batch_size, train_input_size, train_input_size, 3))
-
-    batch_label_sbbox = np.zeros((batch_size, train_output_sizes[0], train_output_sizes[0],
-                                  3, 5 + num_classes))
-    batch_label_mbbox = np.zeros((batch_size, train_output_sizes[1], train_output_sizes[1],
-                                  3, 5 + num_classes))
-    batch_label_lbbox = np.zeros((batch_size, train_output_sizes[2], train_output_sizes[2],
-                                  3, 5 + num_classes))
-
-    batch_sbboxes = np.zeros((batch_size, max_bbox_per_scale, 4))
-    batch_mbboxes = np.zeros((batch_size, max_bbox_per_scale, 4))
-    batch_lbboxes = np.zeros((batch_size, max_bbox_per_scale, 4))
-
-    if (step + 1) * batch_size > n:
-        batch = annotation_lines[n - batch_size:n]
-    else:
-        batch = annotation_lines[step * batch_size:(step + 1) * batch_size]
-    threads = []  # 你总共就6张图片，还要开6个进程来读取？不止读取，还要做一些预处理，比如解析bbox
-    # FIXME: 这里是多线程读数据，为啥要这样操作？
-    # 1. 创建一个dataset类，然后用pytorch自带的loader不行吗？那么要搞清楚，这里到底需要什么label，做什么处理才能加载这些数据
-    # 2. 一次性把所有图片加载到内存可以吗？
-    # 为啥要改？因为我觉的不合理？总共就几张图片，非要多进程来读取？而且要反复读取？一次性加载不行吗？这样很浪费时间的
-
-    # TODO: 每次训练，都要重新读取数据，解析label，为什么不一次性干完，然后只需要读取就行了？
-    for num in range(batch_size):
-        t = threading.Thread(target=multi_thread_read, args=(batch, num, train_input_size, annotation_type, train_output_sizes, strides, num_classes, max_bbox_per_scale, anchors, batch_image,
-                      batch_label_sbbox, batch_label_mbbox, batch_label_lbbox,
-                      batch_sbboxes, batch_mbboxes, batch_lbboxes))
-        threads.append(t)
-        t.start()
-    # 等待所有线程任务结束。
-    for t in threads:
-        t.join()
-    batch_image = batch_image.transpose(0, 3, 1, 2)
-    return batch_image, [batch_label_sbbox, batch_label_mbbox, batch_label_lbbox, batch_sbboxes, batch_mbboxes,
-                         batch_lbboxes]
+from model import Darknet
+from dataset import ListDataset
+from loss import YOLOLayer
+from utils import set_seed, get_detection_annotation, compute_mAP, non_max_suppression
 
 
-if __name__ == '__main__':
+# 设置参数
+parser = argparse.ArgumentParser()
+parser.add_argument("--device", type=int, default=0, help="cpu if <0, or gpu id")
+parser.add_argument("--seed", type=int, default=42, help="exp seed")
+parser.add_argument("--epochs", type=int, default=50, help="number of epochs")
+parser.add_argument("--lr", type=float, default=0.001, help="learning rate")
+parser.add_argument("--data_dir", type=str, default="annotation/data_parallel", help="path to dataset")
+parser.add_argument("--output_dir", type=str, default="output", help="path to results")
+parser.add_argument("--batch_size", type=int, default=128, help="size of each image batch")
+parser.add_argument("--iou_thres", type=float, default=0.5, help="object confidence threshold")
+parser.add_argument("--conf_thres", type=float, default=0.5, help="object confidence threshold")
+parser.add_argument("--nms_thres", type=float, default=0.4, help="iou threshold for non-maximum suppression")
+parser.add_argument("--img_size", type=int, nargs='+', default=[160, 320], help="size of each image dimension")
+parser.add_argument("--save_freq", type=int, default=50, help="interval between saving model weights")
+args = parser.parse_args()
 
-    # args
-    parser = argparse.ArgumentParser()
-    # 必要参数
-    parser.add_argument('--pattern', type=int, default= 0 , help='the type of pattern for training')
-    parser.add_argument('--batch_size', type=int, default=6, help='batch size to train')
-    parser.add_argument('--weight_path',type = str,default = 'ep000300-loss18.855-val_loss18.174.pt',help = 'the path of weitgh file')
+device = f'cuda:{args.device}' if args.device >=0 and torch.cuda.is_available() else 'cpu'
+set_seed(args.seed)
+logid = time.strftime('%Y%m%d_%H%M%S', time.localtime())
+log_dir = os.path.join(args.output_dir, logid)
+model_dir = os.path.join(log_dir, 'model')
+res_dir = os.path.join(log_dir, 'result')
+os.makedirs(res_dir, exist_ok=True)
+os.makedirs(model_dir, exist_ok=True)
+wandb.init(
+    project=f"YOLOv3",
+    name=f"{logid}",
+    config=vars(args)
+)
 
-    # 可选参数
-    parser.add_argument('--classes_path',type = str,default = 'annotation/classes.txt', help = 'the class list of dataset')
-    parser.add_argument('--train_path',type = str,default = 'annotation/data_train.txt', help = 'the path of train dataset')
-    parser.add_argument('--val_path',type = str,default = 'annotation/data_val.txt', help = 'the path of val dataset')
-    args = parser.parse_args()
+# 创建模型
+num_classes = 1
+init_filter = 8
+model = Darknet(num_classes, init_filter).to(device)
+summary(model, (3, 160, 320))
+
+# 创建数据集
+train_dataloader = torch.utils.data.DataLoader(
+    ListDataset(args.data_dir, mode='train'), batch_size=args.batch_size, shuffle=True
+)
+val_dataloader = torch.utils.data.DataLoader(
+    ListDataset(args.data_dir, mode='val'), batch_size=args.batch_size
+)
+anchors = torch.Tensor([[[10, 13], [16, 30], [33, 23]],
+                        [[30, 61], [62, 45], [59, 119]],
+                        [[116, 90], [156, 198], [373, 326]]])
+
+# loss function and optimizer
+Loss1 = YOLOLayer(anchors[2], num_classes, iou_thres=args.iou_thres, device=device)
+Loss2 = YOLOLayer(anchors[1], num_classes, iou_thres=args.iou_thres, device=device)
+Loss3 = YOLOLayer(anchors[0], num_classes, iou_thres=args.iou_thres, device=device)
+optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+
+"""
+训练过程中，保存最后1个epoch的验证集上的输出；
+再加载一下验证集，保存输出；
+"""
+
+for epoch in tqdm(range(args.epochs)):
+    loss1_list = {
+        'loss_x': [],
+        'loss_y': [],
+        'loss_w': [],
+        'loss_h': [],
+        'loss_conf': [],
+        'loss_cls': []
+    }
+    loss2_list = {
+        'loss_x': [],
+        'loss_y': [],
+        'loss_w': [],
+        'loss_h': [],
+        'loss_conf': [],
+        'loss_cls': []
+    }
+    loss3_list = {
+        'loss_x': [],
+        'loss_y': [],
+        'loss_w': [],
+        'loss_h': [],
+        'loss_conf': [],
+        'loss_cls': []
+    }
+
+    train_annotations, train_detections = [], []
+    model.train()
+    for img_path, imgs, targets in train_dataloader:
+        # imgs: [B, 3, 416, 416]
+        # targets: [B, 50, 5]
+        optimizer.zero_grad()
+        imgs = imgs.to(device)
+        targets = targets.to(device)
+        y1, y2, y3 = model(imgs)
+        loss1_dict, pred_bbox1 = Loss1(y1, targets)
+        loss2_dict, pred_bbox2 = Loss2(y2, targets)
+        loss3_dict, pred_bbox3 = Loss3(y3, targets)
+        loss = loss1_dict[0] + loss2_dict[0] + loss3_dict[0]
+        loss.backward()
+        optimizer.step()
+        # NOTE: 计算mAP
+        # mAP一直是0，为了判断是不是计算mAP的函数有误，可以打印一下预测的结果，与ground truth，然后手动看看，到底是不是0
+        pred = torch.cat((pred_bbox1.data, pred_bbox2.data, pred_bbox3.data), dim=1)
+        batch_detections, batch_annotations = get_detection_annotation(pred, targets, args.conf_thres, args.nms_thres, num_classes, args.img_size)
+        train_detections += batch_detections
+        train_annotations += batch_annotations
+
+        loss1_list['loss_x'].append(loss1_dict[1])
+        loss1_list['loss_y'].append(loss1_dict[2])
+        loss1_list['loss_w'].append(loss1_dict[3])
+        loss1_list['loss_h'].append(loss1_dict[4])
+        loss1_list['loss_conf'].append(loss1_dict[5])
+        loss1_list['loss_cls'].append(loss1_dict[6])
+
+        loss2_list['loss_x'].append(loss2_dict[1])
+        loss2_list['loss_y'].append(loss2_dict[2])
+        loss2_list['loss_w'].append(loss2_dict[3])
+        loss2_list['loss_h'].append(loss2_dict[4])
+        loss2_list['loss_conf'].append(loss2_dict[5])
+        loss2_list['loss_cls'].append(loss2_dict[6])
+
+        loss3_list['loss_x'].append(loss3_dict[1])
+        loss3_list['loss_y'].append(loss3_dict[2])
+        loss3_list['loss_w'].append(loss3_dict[3])
+        loss3_list['loss_h'].append(loss3_dict[4])
+        loss3_list['loss_conf'].append(loss3_dict[5])
+        loss3_list['loss_cls'].append(loss3_dict[6])
+    # 计算训练集的指标
+    train_average_precisions = compute_mAP(train_detections, train_annotations, num_classes, args.iou_thres)
+
+    # 测试一下验证集的指标
+    model.eval()
+    val_annotations, val_detections = [], []
+    for img_path, imgs, targets in val_dataloader:
+        imgs = imgs.to(device)
+        targets = targets.to(device)
+        with torch.no_grad():
+            y1, y2, y3 = model(imgs)
+            pred_bbox1 = Loss1(y1)
+            pred_bbox2 = Loss2(y2)
+            pred_bbox3 = Loss3(y3)
+            pred = torch.cat((pred_bbox1, pred_bbox2, pred_bbox3), dim=1)
+        batch_detections, batch_annotations = get_detection_annotation(pred, targets, args.conf_thres, args.nms_thres, num_classes, args.img_size)
+        val_detections += batch_detections
+        val_annotations += batch_annotations
     
-    pattern = args.pattern
-    batch_size = args.batch_size
-    train_path = args.train_path
-    val_path = args.val_path
-    classes_path = args.classes_path
-    weight_path = args.weight_path
+    with open(os.path.join(res_dir, f'val_detections.pkl'), 'wb') as f:
+        pickle.dump(val_detections, f)
+    with open(os.path.join(res_dir, f'val_annotations.pkl'), 'wb') as f:
+        pickle.dump(val_annotations, f)
+    # 以字典形式记录每一类的mAP值
+    val_average_precisions = compute_mAP(val_detections, val_annotations, num_classes, args.iou_thres)
 
-    class_names = get_classes(classes_path)
-    num_classes = len(class_names)
-    """
-    anchors = np.array([
-        [[1.25, 1.625], [2.0, 3.75], [4.125, 2.875]],
-        [[1.875, 3.8125], [3.875, 2.8125], [3.6875, 7.4375]],
-        [[3.625, 2.8125], [4.875, 6.1875], [11.65625, 10.1875]]
-    ])
-    """
-    """
-    anchors = torch.Tensor([[[10, 13], [16, 30], [33, 23]],
-                            [[30, 61], [62, 45], [59, 119]],
-                            [[116, 90], [156, 198], [373, 326]]                
-    ])
-    """
-    anchors = torch.Tensor([[[7,14],[8,16],[10,27]],
-                           [[12,21],[16,17],[17,34]],
-                           [[17,22],[20,18],[22,20]]])
-    # 模式。 0-从头训练，1-读取模型训练（包括解冻），2-读取coco预训练模型训练
-    #pattern = 0
-    save_best_only = False
-    max_bbox_per_scale = 150
-    iou_loss_thresh = 0.7
+    # log everything and save model
+    wandb.log({
+        'mAP_train': train_average_precisions[0],
+        'mAP_val': val_average_precisions[0],
+        'loss': loss.item(),
+        'loss_x_featmap1': np.mean(loss1_list['loss_x']),
+        'loss_y_featmap1': np.mean(loss1_list['loss_y']),
+        'loss_w_featmap1': np.mean(loss1_list['loss_w']),
+        'loss_h_featmap1': np.mean(loss1_list['loss_h']),
+        'loss_conf_featmap1': np.mean(loss1_list['loss_conf']),
+        'loss_cls_featmap1': np.mean(loss1_list['loss_cls']),
+        'loss_x_featmap2': np.mean(loss2_list['loss_x']),
+        'loss_y_featmap2': np.mean(loss2_list['loss_y']),
+        'loss_w_featmap2': np.mean(loss2_list['loss_w']),
+        'loss_h_featmap2': np.mean(loss2_list['loss_h']),
+        'loss_conf_featmap2': np.mean(loss2_list['loss_conf']),
+        'loss_cls_featmap2': np.mean(loss2_list['loss_cls']),
+        'loss_x_featmap3': np.mean(loss3_list['loss_x']),
+        'loss_y_featmap3': np.mean(loss3_list['loss_y']),
+        'loss_w_featmap3': np.mean(loss3_list['loss_w']),
+        'loss_h_featmap3': np.mean(loss3_list['loss_h']),
+        'loss_conf_featmap3': np.mean(loss3_list['loss_conf']),
+        'loss_cls_featmap3': np.mean(loss3_list['loss_cls'])
+    })
+    if (epoch+1) % args.save_freq == 0:
+        torch.save(model, os.path.join(model_dir, f'model-{epoch}.pth'))
 
-    # 经过试验发现，使用focal_loss会增加误判fp，所以默认使用二值交叉熵损失函数训练。下面这3个alpha请忽略。
-    # 经过试验发现alpha取>0.5的值时mAP会提高，但误判（False Predictions）会增加；alpha取<0.5的值时mAP会降低，误判会降低。
-    # 试验时alpha_1取0.95，alpha_2取0.85，alpha_3取0.75
-    # 小感受野输出层输出的格子最多，预测框最多，正样本很有可能占比是最少的，所以试验时alpha_1 > alpha_2 > alpha_3
-    alpha_1 = 0.5  # 小感受野输出层的focal_loss的alpha
-    alpha_2 = 0.5  # 中感受野输出层的focal_loss的alpha
-    alpha_3 = 0.5  # 大感受野输出层的focal_loss的alpha
+model = torch.load(os.path.join(model_dir, f'model-{epoch}.pth'))
+all_detections, all_annotations = [], []
+img_path_res, detect_res, label_res = [], [], []
+model.eval()
+for img_path, imgs, targets in tqdm(val_dataloader):
+    imgs = imgs.to(device)
+    targets = targets.to(device)
 
-    # 初始卷积核个数
-    initial_filters = 8 
+    with torch.no_grad():
+        y1, y2, y3 = model(imgs)
+        pred1 = Loss1(y1)
+        pred2 = Loss2(y2)
+        pred3 = Loss3(y3)
+        pred = torch.cat((pred1, pred2, pred3), dim=1)
 
-    net = YOLOv3(num_classes, initial_filters=initial_filters) # initialize the model
-    device = torch.device('cuda' if use_cuda else 'cpu')
-    net_img = net.to(device)
+    # 为了画图
+    # img_path_res += img_path
+    # detections = non_max_suppression(pred, num_classes, args.conf_thres, args.nms_thres)
+    # detect_res += detections
 
-    if pattern == 2:
-        lr = 0.0001
-        batch_size = 8
-        initial_epoch = 0
-        epochs = 999
-        # 冻结代码待补充
-        # 分支2还未完成
-        net.load_state_dict(torch.load(weight_path))
+    # 为了计算mAP
+    batch_detections, batch_annotations = get_detection_annotation(pred, targets, args.conf_thres, args.nms_thres, num_classes, args.img_size)
+    all_detections += batch_detections
+    all_annotations += batch_annotations
 
-    elif pattern == 1: # load the pretrained model
-        lr = 0.0001
-        batch_size = 6
-        initial_epoch = 35
-        epochs = 300
-        # 解冻代码待补充
-        # 分支1可用
-        checkpoint = torch.load(weight_path)
-        net.load_state_dict(checkpoint['model_state_dict'])
-        optimizer = torch.optim.Adam(net.parameters(),lr=lr) # define an Adam optimizer
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+with open(os.path.join(res_dir, f'all_detections_after.pkl'), 'wb') as f:
+    pickle.dump(all_detections, f)
+with open(os.path.join(res_dir, f'all_annotations_after.pkl'), 'wb') as f:
+    pickle.dump(all_annotations, f)
 
-    elif pattern == 0: # train from scratch
-        lr = 0.001
-        batch_size = 6
-        initial_epoch = 0
-        epochs = 130
-        optimizer = torch.optim.Adam(net.parameters(), lr=lr)  # 传入 net 的所有参数, 学习率
-
-    # 打印网络结构
-    # print(net)
-
-    from torchsummary import summary
-
-    summary(net_img, (3, 416, 416)) # 416,416 / 320,320
-
-    # 建立损失函数
-    yolo_loss = YOLOLoss(num_classes, iou_loss_thresh, anchors, alpha_1, alpha_2, alpha_3)
-    if use_cuda:
-        yolo_loss = yolo_loss.cuda()  # 如果有gpu可用，损失函数存放在gpu显存里
-        net = net.cuda()  # 如果有gpu可用，模型（包括了权重weight）存放在gpu显存里
-
-    # 验证集和训练集
-    with open(train_path) as f:
-        train_lines = f.readlines()
-    with open(val_path) as f:
-        val_lines = f.readlines()
-    num_train = len(train_lines)
-    num_val = len(val_lines)
-
-
-    # 一轮的步数
-    train_steps = int(num_train / batch_size) if num_train % batch_size == 0 else int(num_train / batch_size) + 1
-    val_steps = int(num_val / batch_size) if num_val % batch_size == 0 else int(num_val / batch_size) + 1
-    # optimizer = torch.optim.Adam(net.parameters(), lr=lr)  # 传入 net 的所有参数, 学习率
-
-    best_val_loss = 0.0
-    for t in range(initial_epoch, epochs, 1):
-
-        net.train() # 切换成训练模式
-
-        print('Epoch %d/%d\n' % (t + 1, epochs))
-        epochStartTime = time.time()
-        start = time.time()
-        # 每个epoch之前洗乱
-        np.random.shuffle(train_lines)
-        train_epoch_loss, val_epoch_loss = [], []
-
-        # 训练阶段
-        for step in range(train_steps):
-            batch_image, lables = generate_one_batch(train_lines, step, batch_size, anchors, num_classes,
-                                                    max_bbox_per_scale, 'train')
-            if use_cuda:
-                batch_image = torch.Tensor(batch_image).cuda()
-                lables = [torch.Tensor(it).cuda() for it in lables]
-            else:
-                batch_image = torch.Tensor(batch_image)
-                lables = [torch.Tensor(it) for it in lables]
-            y1_pred, y2_pred, y3_pred = net(batch_image)  # 直接卷积后的输出
-            args = [y1_pred, y2_pred, y3_pred] + lables
-            train_step_loss = yolo_loss(args)
-            step_loss = 0.
-            if use_cuda:
-                step_loss = train_step_loss.cpu().data.numpy()
-            else:
-                step_loss = train_step_loss.data.numpy()
-            train_epoch_loss.append(step_loss)
-
-            # 自定义进度条
-            percent = ((step + 1) / train_steps) * 100
-            num = int(29 * percent / 100)
-            time.sleep(0.1)
-            ETA = int((time.time() - epochStartTime) * (100 - percent) / percent)
-            sys.stdout.write('\r{0}'.format(' ' * (len(str(train_steps)) - len(str(step + 1)))) + \
-                             '{0}/{1} [{2}>'.format(step + 1, train_steps, '=' * num) + '{0}'.format(
-                '.' * (29 - num)) + ']' + \
-                             ' - ETA: ' + str(ETA) + 's' + ' - loss: %.4f' % (step_loss,))
-            sys.stdout.flush()
-
-            # 更新权重
-            optimizer.zero_grad()  # 清空上一步的残余更新参数值
-            train_step_loss.backward()  # 误差反向传播, 计算参数更新值
-            optimizer.step()  # 将参数更新值施加到 net 的 parameters 上
-
-        # 验证阶段
-        net.eval() # 切换成测试模式
-
-        for step in range(val_steps):
-            batch_image, lables = generate_one_batch(val_lines, step, batch_size, anchors, num_classes,
-                                                     max_bbox_per_scale, 'val')
-            if use_cuda:
-                batch_image = torch.Tensor(batch_image).cuda()
-                lables = [torch.Tensor(it).cuda() for it in lables]
-            else:
-                batch_image = torch.Tensor(batch_image)
-                lables = [torch.Tensor(it) for it in lables]
-            y1_pred, y2_pred, y3_pred = net(batch_image)  # 直接卷积后的输出
-            args = [y1_pred, y2_pred, y3_pred] + lables
-            val_step_loss = yolo_loss(args)
-            step_loss = 0.
-            if use_cuda:
-                step_loss = val_step_loss.cpu().data.numpy()
-            else:
-                step_loss = val_step_loss.data.numpy()
-            val_epoch_loss.append(step_loss)
-
-        train_epoch_loss, val_epoch_loss = np.mean(train_epoch_loss), np.mean(val_epoch_loss)
-
-        # 保存模型
-        content = '%d\tloss = %.4f\tval_loss = %.4f\n' % ((t + 1), train_epoch_loss, val_epoch_loss)
-        with open('yolov3_pytorch_logs_new_anchor.txt', 'a', encoding='utf-8') as f:
-            f.write(content)
-            f.close()
-        path_dir = os.listdir('./')
-        eps = []
-        names = []
-        for name in path_dir:
-            if name[len(name) - 2:len(name)] == 'pt' and name[0:2] == 'ep':
-                sss = name.split('-')
-                ep = int(sss[0][2:])
-                eps.append(ep)
-                names.append(name)
-        if len(eps) >= 10:
-            i2 = eps.index(min(eps))
-            os.remove(names[i2])
-        if t == initial_epoch:
-            best_val_loss = val_epoch_loss
-            torch.save({
-                    'epoch': epochs,
-                    'model_state_dict': net.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'train_loss_history': train_epoch_loss,
-                    'val_loss_history': val_epoch_loss,
-                    }, 
-                    'output\ep%.6d-loss%.3f-val_loss%.3f.pt' % ((t + 1), train_epoch_loss, val_epoch_loss) # PATH
-                    )
-        else:
-            if save_best_only:
-                if val_epoch_loss < best_val_loss:
-                    best_val_loss = val_epoch_loss
-                    torch.save({
-                    'epoch': epochs,
-                    'model_state_dict': net.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'train_loss_history': train_epoch_loss,
-                    'val_loss_history': val_epoch_loss,
-                    }, 
-                    'output\ep%.6d-loss%.3f-val_loss%.3f.pt' % ((t + 1), train_epoch_loss, val_epoch_loss) # PATH
-                    )
-            else:
-                torch.save({
-                    'epoch': epochs,
-                    'model_state_dict': net.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'train_loss_history': train_epoch_loss,
-                    'val_loss_history': val_epoch_loss,
-                    }, 
-                    'output\ep%.6d-loss%.3f-val_loss%.3f.pt' % ((t + 1), train_epoch_loss, val_epoch_loss) # PATH
-                    )
-
-        # 打印本轮训练结果
-        sys.stdout.write(
-            '\r{0}/{1} [{2}='.format(train_steps, train_steps, '=' * num) + '{0}'.format('.' * (29 - num)) + ']' + \
-            ' - %ds' % (int(time.time() - epochStartTime),) + ' - loss: %.4f' % (
-            train_epoch_loss,) + ' - val_loss: %.4f\n' % (val_epoch_loss,))
-        sys.stdout.flush()
+# 以字典形式记录每一类的mAP值
+average_precisions = compute_mAP(all_detections, all_annotations, num_classes, args.iou_thres)
+print(f"mAP: {average_precisions[0]}")
