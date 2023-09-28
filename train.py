@@ -23,6 +23,7 @@ def get_args():
     parser.add_argument("--data_dir", type=str, default="/home/agent/Code/datasets/data_20230626_parallel", help="path to dataset")
     parser.add_argument("--output_dir", type=str, default="output", help="path to results")
     parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--init_filter", type=int, default=8)
     parser.add_argument("--weight_decay", type=float, default=0.0005)
     parser.add_argument("--iou_thres", type=float, default=0.5, help="iou threshold required to qualify as detected")
     parser.add_argument("--conf_thres", type=float, default=0.5, help="objectiveness confidence threshold")
@@ -35,9 +36,8 @@ def get_args():
 
 def train(args):
     num_classes = 1
-    init_filter = 8
-    model = Darknet(num_classes, init_filter).to(args.device)
-    summary(model, (3, 160, 320))
+    model = Darknet(num_classes, args.init_filter).to(args.device)
+    summary(model, (3, *args.img_size))
 
     train_dataloader = torch.utils.data.DataLoader(
         ListDataset(args.data_dir, mode='train'), batch_size=args.batch_size, shuffle=True
@@ -45,11 +45,9 @@ def train(args):
     val_dataloader = torch.utils.data.DataLoader(
         ListDataset(args.data_dir, mode='val'), batch_size=args.batch_size
     )
-    anchors = torch.Tensor([[[10, 13], [16, 30], [33, 23]],
-                            [[30, 61], [62, 45], [59, 119]],
-                            [[116, 90], [156, 198], [373, 326]]])
+    anchors = torch.tensor([[10, 13], [16, 30], [33, 23]])
 
-    YOLOLoss = YOLOLayer(anchors[0], num_classes, img_dim=args.img_size)
+    YOLOLoss = YOLOLayer(anchors, num_classes, img_dim=args.img_size)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     for epoch in tqdm(range(args.epochs)):
