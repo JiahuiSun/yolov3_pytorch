@@ -6,21 +6,6 @@ import numpy as np
 import glob
 
 
-class ImageFolder(Dataset):
-    def __init__(self, folder_path):
-        self.files = glob.glob('%s/*.*' % folder_path)
-
-    def __getitem__(self, index):
-        img_path = self.files[index % len(self.files)]
-        img = cv2.imread(img_path) / 255.0
-        img = np.transpose(img, (2, 0, 1))
-        img = torch.from_numpy(img).float()
-        return img_path, img
-
-    def __len__(self):
-        return len(self.files)
-
-
 class ListDataset(Dataset):
     """
     返回 图片路径、图片array、图片上的bbox（开辟10行存储，每行1个bbox，没有bbox的行值为0）

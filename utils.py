@@ -316,7 +316,7 @@ def bbox_iou_numpy(rect1, rectangles, x1y1x2y2=True):
     return iou
 
 
-def build_targets(target, anchors, num_anchors, num_classes, grid_size, iou_thres):
+def build_targets(target, anchors, num_anchors, num_classes, grid_size, ignore_thres):
     # 参数:
     # target: [1, 50, 5]
     # anchors: [3, 2]
@@ -373,7 +373,7 @@ def build_targets(target, anchors, num_anchors, num_classes, grid_size, iou_thre
             anch_ious = bbox_iou(gt_box, anchor_shapes, x1y1x2y2=False)
 
             # 将交并比大于阈值的部分设置conf_mask的对应位为0(ignore)
-            conf_mask[b, anch_ious > iou_thres, gj, gi] = 0
+            conf_mask[b, anch_ious > ignore_thres, gj, gi] = 0
 
             # 找到匹配度最高的 anchor box, 返回下标: 0,1,2 中的一个
             best_n = np.argmax(anch_ious)

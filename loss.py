@@ -11,13 +11,12 @@ class YOLOLayer(nn.Module):
 
     NOTE: 图片通道的顺序是CHW，输出的feature map通道的顺序是xywh、分数、类别概率
     """
-    def __init__(self, anchors, num_classes, iou_thres=0.5, img_dim=(160, 320), device='cpu'):
+    def __init__(self, anchors, num_classes, img_dim=(160, 320)):
         super().__init__()
         self.anchors = anchors # anchors = [(116,90),(156,198),(373,326)]
         self.num_classes = num_classes # 1
-        self.iou_thres = iou_thres
         self.image_dim = img_dim # (160, 320)
-        self.device = device
+        self.ignore_thres = 0.5
         self.n_anchors = len(anchors) # 3
         self.bbox_attrs = 5 + num_classes
 
@@ -30,6 +29,7 @@ class YOLOLayer(nn.Module):
         # targets: [10, 5]
         n_batch, _, H, W, _ = prediction.size()
         stride = self.image_dim[0] / H # 416 / W = 416 / 13 = 32
+        device = prediction.device
 
         x = torch.sigmoid(prediction[..., 0]) # center x: [1, 3, 13, 13]
         y = torch.sigmoid(prediction[..., 1]) # center y: [1, 3, 13, 13]
@@ -39,19 +39,19 @@ class YOLOLayer(nn.Module):
         pred_cls = torch.sigmoid(prediction[..., 5:]) # [1, 3, 13, 13, 80]
 
         # grid_x的shape为[1,1,nG,nG], 每一行的元素为:[0,1,2,3,...,nG-1]
-        grid_x = torch.arange(W).repeat(H, 1).view([1, 1, H, W]).to(self.device)
+        grid_x = torch.arange(W).repeat(H, 1).view([1, 1, H, W]).to(device)
         # grid_y的shape为[1,1,nG,nG], 每一列元素为: [0,1,2,3, ...,nG-1]
-        grid_y = torch.arange(H).repeat(W, 1).t().view(1, 1, H, W).to(self.device)
+        grid_y = torch.arange(H).repeat(W, 1).t().view(1, 1, H, W).to(device)
 
         # scaled_anchors 是将原图上的 box 大小根据当前特征图谱的大小转换成相应的特征图谱上的 box
         # shape: [3, 2]
-        scaled_anchors = torch.tensor([(a_h / stride, a_w / stride) for a_h, a_w in self.anchors]).to(self.device)
+        scaled_anchors = torch.tensor([(a_h / stride, a_w / stride) for a_h, a_w in self.anchors]).to(device)
 
         # 分别获取其 w 和 h, 并将shape形状变为: [1,3,1,1]
         anchor_h = scaled_anchors[:, 0:1].view((1, self.n_anchors, 1, 1))
         anchor_w = scaled_anchors[:, 1:2].view((1, self.n_anchors, 1, 1))
         # shape: [1, 3, 13, 13, 4], 给 anchors 添加 offset 和 scale
-        pred_boxes = torch.zeros(prediction[..., :4].shape).to(self.device)
+        pred_boxes = torch.zeros(prediction[..., :4].shape).to(device)
         pred_boxes[..., 0] = x.data + grid_x
         pred_boxes[..., 1] = y.data + grid_y
         pred_boxes[..., 2] = torch.exp(w.data) * anchor_w
@@ -70,8 +70,6 @@ class YOLOLayer(nn.Module):
             return output
         else:  # 如果提供了 targets 标签, 则说明是处于训练阶段
             # 调用 utils.py 文件中的 build_targets 函数, 将真实的 box 数据转化成训练用的数据格式
-            # nGT = int 真实box的数量
-            # nCorrect = int 预测正确的数量
             # mask: torch.Size([1, 3, 13, 13])
             # conf_mask: torch.Size([1, 3, 13, 13])
             # tx: torch.Size([1, 3, 13, 13])
@@ -86,18 +84,18 @@ class YOLOLayer(nn.Module):
                 num_anchors=self.n_anchors,
                 num_classes=self.num_classes,
                 grid_size=(H, W),  # 这里说明，只有得到预测结果，才能build target
-                iou_thres=self.iou_thres
+                ignore_thres=self.ignore_thres
             )
 
             # 处理 target Variables
             mask = mask.type(torch.bool)
             conf_mask = conf_mask.type(torch.bool)
-            tx = tx.to(self.device)
-            ty = ty.to(self.device)
-            tw = tw.to(self.device)
-            th = th.to(self.device)
-            tconf = tconf.to(self.device)
-            tcls = tcls.to(self.device)
+            tx = tx.to(device)
+            ty = ty.to(device)
+            tw = tw.to(device)
+            th = th.to(device)
+            tconf = tconf.to(device)
+            tcls = tcls.to(device)
 
             # 获取表明gt和非gt的conf_mask
             # 这里 conf_mask_true 指的是具有最佳匹配度的anchor box
