@@ -120,15 +120,11 @@ class Darknet(nn.Module):
         feat_downsample32 = self.stack_residual_block_5(x)
 
         downsample32 = self.CBL5_1(feat_downsample32)
-        y1 = self.yolo_head1(downsample32)  # B, 3*(n_class+5), H, W
-        y1 = y1.view(y1.size(0), 3, (self.num_classes + 5), y1.size(2), y1.size(3))  # B, 3, n_class+5, H, W
 
         x = self.conv7(downsample32)
         x = self.upsample1(x)
         x = torch.cat((x, feat_downsample16), dim=1)
         downsample16 = self.CBL5_2(x)
-        y2 = self.yolo_head2(downsample16)
-        y2 = y2.view(y2.size(0), 3, (self.num_classes + 5), y2.size(2), y2.size(3))  # reshape
 
         x = self.conv8(downsample16)
         x = self.upsample2(x)
@@ -137,7 +133,5 @@ class Darknet(nn.Module):
         y3 = self.yolo_head3(downsample8)
         y3 = y3.view(y3.size(0), 3, (self.num_classes + 5), y3.size(2), y3.size(3))  # reshape
 
-        y1 = y1.permute(0, 1, 3, 4, 2)
-        y2 = y2.permute(0, 1, 3, 4, 2)
         y3 = y3.permute(0, 1, 3, 4, 2)
-        return y1, y2, y3
+        return y3

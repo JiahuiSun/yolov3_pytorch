@@ -23,6 +23,7 @@ def get_args():
     parser.add_argument("--data_dir", type=str, default="/home/agent/Code/datasets/data_20230626_parallel", help="path to dataset")
     parser.add_argument("--output_dir", type=str, default="output", help="path to results")
     parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--weight_decay", type=float, default=0.0005)
     parser.add_argument("--iou_thres", type=float, default=0.5, help="iou threshold required to qualify as detected")
     parser.add_argument("--conf_thres", type=float, default=0.5, help="objectiveness confidence threshold")
     parser.add_argument("--nms_thres", type=float, default=0.4, help="iou threshold for non-maximum suppression")
@@ -48,10 +49,8 @@ def train(args):
                             [[30, 61], [62, 45], [59, 119]],
                             [[116, 90], [156, 198], [373, 326]]])
 
-    Loss1 = YOLOLayer(anchors[2], num_classes, img_dim=args.img_size)
-    Loss2 = YOLOLayer(anchors[1], num_classes, img_dim=args.img_size)
-    Loss3 = YOLOLayer(anchors[0], num_classes, img_dim=args.img_size)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    YOLOLoss = YOLOLayer(anchors[0], num_classes, img_dim=args.img_size)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     for epoch in tqdm(range(args.epochs)):
         train_loss_list = []
@@ -61,17 +60,14 @@ def train(args):
             optimizer.zero_grad()
             imgs = imgs.to(args.device)
             targets = targets.to(args.device)
-            y1, y2, y3 = model(imgs)
-            loss1_dict, pred_bbox1 = Loss1(y1, targets)
-            loss2_dict, pred_bbox2 = Loss2(y2, targets)
-            loss3_dict, pred_bbox3 = Loss3(y3, targets)
-            train_loss = loss1_dict[0] + loss2_dict[0] + loss3_dict[0]
+            y = model(imgs)
+            loss_dict, pred_bbox = YOLOLoss(y, targets)
+            train_loss = loss_dict[0]
             train_loss.backward()
             optimizer.step()
             train_loss_list.append(train_loss.item())
 
-            pred = torch.cat((pred_bbox1.data, pred_bbox2.data, pred_bbox3.data), dim=1)
-            batch_detections, batch_annotations = get_detection_annotation(pred, targets, args.conf_thres, args.nms_thres, num_classes, args.img_size)
+            batch_detections, batch_annotations = get_detection_annotation(pred_bbox.data, targets, args.conf_thres, args.nms_thres, num_classes, args.img_size)
             train_detections += batch_detections
             train_annotations += batch_annotations
         train_average_precisions = compute_mAP(train_detections, train_annotations, num_classes, args.iou_thres)
@@ -83,14 +79,11 @@ def train(args):
             imgs = imgs.to(args.device)
             targets = targets.to(args.device)
             with torch.no_grad():
-                y1, y2, y3 = model(imgs)
-                loss1_dict, pred_bbox1 = Loss1(y1, targets)
-                loss2_dict, pred_bbox2 = Loss2(y2, targets)
-                loss3_dict, pred_bbox3 = Loss3(y3, targets)
-                pred = torch.cat((pred_bbox1, pred_bbox2, pred_bbox3), dim=1)
-            val_loss = loss1_dict[0] + loss2_dict[0] + loss3_dict[0]
+                y = model(imgs)
+                loss_dict, pred_bbox = YOLOLoss(y, targets)
+            val_loss = loss_dict[0]
             val_loss_list.append(val_loss.item())
-            batch_detections, batch_annotations = get_detection_annotation(pred, targets, args.conf_thres, args.nms_thres, num_classes, args.img_size)
+            batch_detections, batch_annotations = get_detection_annotation(pred_bbox.data, targets, args.conf_thres, args.nms_thres, num_classes, args.img_size)
             val_detections += batch_detections
             val_annotations += batch_annotations
         val_average_precisions = compute_mAP(val_detections, val_annotations, num_classes, args.iou_thres)
