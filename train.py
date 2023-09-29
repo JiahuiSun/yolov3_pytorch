@@ -92,7 +92,7 @@ def train(args):
             'val_loss': np.mean(val_loss_list)
         })
         if (epoch+1) % args.save_freq == 0:
-            torch.save(model.state_dict(), os.path.join(args.model_dir, f'model-{epoch}.pth'))
+            torch.save(model, os.path.join(args.model_dir, f'model-{epoch}.pth'))
 
 
 if __name__ == '__main__':

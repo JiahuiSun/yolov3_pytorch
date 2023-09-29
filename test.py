@@ -1,6 +1,6 @@
 import numpy as np
 import argparse
-import tqdm
+from tqdm import tqdm
 import time
 import os
 import torch
@@ -9,7 +9,7 @@ import cv2
 
 from model import Darknet
 from loss import YOLOLayer
-from utils import set_seed, compute_mAP, non_max_suppression, get_detection_annotation
+from utils import set_seed, compute_single_AP, get_single_detection_annotation, nms_single_class
 from dataset import ListDataset
 
 
@@ -17,9 +17,10 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", type=int, default=0, help="cpu if <0, or gpu id")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--model_path", type=str, default="output/20230928_144627/model/model-99.pth", help="path to model")
+    parser.add_argument("--model_path", type=str, default="output/20230929_112026/model/model-99.pth", help="path to model")
     parser.add_argument("--data_dir", type=str, default="/home/agent/Code/datasets/data_20230626_parallel", help="path to dataset")
     parser.add_argument("--output_dir", type=str, default="output", help="path to results")
+    parser.add_argument("--init_filter", type=int, default=8)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--iou_thres", type=float, default=0.5, help="iou threshold required to qualify as detected")
     parser.add_argument("--conf_thres", type=float, default=0.5, help="objectiveness confidence threshold")
@@ -30,48 +31,39 @@ def get_args():
 
 
 def test(args):
-    num_classes = 1
-    init_filter = 8
-    model = Darknet(num_classes, init_filter).to(args.device)
-    model.load_state_dict(torch.load(args.model_path, map_location=args.device))
-    summary(model, (3, 160, 320))
+    model = torch.load(args.model_path, map_location=args.device)
+    summary(model, (3, *args.img_size))
 
     dataloader = torch.utils.data.DataLoader(
         ListDataset(args.data_dir, mode='val'), batch_size=args.batch_size
     )
-    anchors = torch.Tensor([[[10, 13], [16, 30], [33, 23]],
-                            [[30, 61], [62, 45], [59, 119]],
-                            [[116, 90], [156, 198], [373, 326]]])
+    anchors = torch.tensor([[10, 13], [16, 30], [33, 23]])
 
-    Loss1 = YOLOLayer(anchors[2], num_classes, img_dim=args.img_size)
-    Loss2 = YOLOLayer(anchors[1], num_classes, img_dim=args.img_size)
-    Loss3 = YOLOLayer(anchors[0], num_classes, img_dim=args.img_size)
+    YOLOLoss = YOLOLayer(anchors, img_dim=args.img_size)
 
+    val_loss_list = []
     all_detections, all_annotations = [], []
     img_path_res, detect_res = [], []
     model.eval()
-    for img_path, imgs, targets in tqdm.tqdm(dataloader, desc="Detecting objects"):
+    for img_path, imgs, targets in tqdm(dataloader):
         imgs = imgs.to(args.device)
         targets = targets.to(args.device)
-
         with torch.no_grad():
-            y1, y2, y3 = model(imgs)
-            pred1 = Loss1(y1)
-            pred2 = Loss2(y2)
-            pred3 = Loss3(y3)
-            pred = torch.cat((pred1, pred2, pred3), dim=1)
+            y = model(imgs)
+            loss_dict, pred_bbox = YOLOLoss(y, targets)
+        val_loss_list.append(loss_dict[0].item())
 
         # 为了画图
         img_path_res += img_path
-        detections = non_max_suppression(pred.clone(), num_classes, args.conf_thres, args.nms_thres)
+        detections = nms_single_class(pred_bbox.clone().cpu().numpy(), args.conf_thres, args.nms_thres)
         detect_res += detections
 
         # 为了计算mAP
-        batch_detections, batch_annotations = get_detection_annotation(pred, targets, args.conf_thres, args.nms_thres, num_classes, args.img_size)
+        batch_detections, batch_annotations = get_single_detection_annotation(pred_bbox.cpu().numpy(), targets.cpu().numpy(), args.conf_thres, args.nms_thres, args.img_size)
         all_detections += batch_detections
         all_annotations += batch_annotations
-    average_precisions = compute_mAP(all_detections, all_annotations, num_classes, args.iou_thres)
-    print(f"mAP: {average_precisions[0]}")
+    average_precisions = compute_single_AP(all_detections, all_annotations, args.iou_thres)
+    print(f"mAP: {average_precisions:.3f}, loss: {np.mean(val_loss_list):.3f}")
 
     H, W = args.img_size
     color_pred = (0, 0, 255)  # 红色 (BGR颜色格式)
@@ -96,7 +88,7 @@ def test(args):
 
         # 在图上画bbox和conf
         if detections is not None:
-            for x1, y1, x2, y2, conf, cls_conf, cls_pred in detections:
+            for x1, y1, x2, y2, conf in detections:
                 x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
                 cv2.rectangle(img, (x1, y1), (x2, y2), color_pred, box_thick)
         
