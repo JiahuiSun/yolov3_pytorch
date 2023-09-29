@@ -36,7 +36,7 @@ def get_args():
 
 def train(args):
     model = Darknet(args.init_filter).to(args.device)
-    summary(model, (3, *args.img_size))
+    summary(model, (3, *args.img_size), device=args.device)
 
     train_dataloader = torch.utils.data.DataLoader(
         ListDataset(args.data_dir, mode='train'), batch_size=args.batch_size, shuffle=True
