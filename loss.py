@@ -11,18 +11,15 @@ class YOLOLayer(nn.Module):
 
     NOTE: 图片通道的顺序是CHW，输出的feature map通道的顺序是xywh、分数、类别概率
     """
-    def __init__(self, anchors, num_classes, img_dim=(160, 320)):
+    def __init__(self, anchors, img_dim=(160, 320)):
         super().__init__()
         self.anchors = anchors # anchors = [(116,90),(156,198),(373,326)]
-        self.num_classes = num_classes # 1
         self.image_dim = img_dim # (160, 320)
         self.ignore_thres = 0.5
         self.n_anchors = len(anchors) # 3
-        self.bbox_attrs = 5 + num_classes
 
         self.mse_loss = nn.MSELoss(reduction='mean')
         self.bce_loss = nn.BCELoss(reduction='mean')
-        self.ce_loss = nn.CrossEntropyLoss()
 
     def forward(self, prediction, targets=None):
         # prediction: [1, 3, 13, 13, 85]
@@ -36,7 +33,6 @@ class YOLOLayer(nn.Module):
         w = prediction[..., 2] # width: [1, 3, 13, 13]
         h = prediction[..., 3] # height: [1, 3, 13, 13]
         pred_conf = torch.sigmoid(prediction[..., 4]) # [1, 3, 13, 13]
-        pred_cls = torch.sigmoid(prediction[..., 5:]) # [1, 3, 13, 13, 80]
 
         # grid_x的shape为[1,1,nG,nG], 每一行的元素为:[0,1,2,3,...,nG-1]
         grid_x = torch.arange(W).repeat(H, 1).view([1, 1, H, W]).to(device)
@@ -61,8 +57,7 @@ class YOLOLayer(nn.Module):
         output = torch.cat(
             (
                 pred_boxes.view(n_batch, -1, 4) * stride, # 这里会对参数直接乘倍数，恢复正常
-                pred_conf.view(n_batch, -1, 1),
-                pred_cls.view(n_batch, -1, self.num_classes),
+                pred_conf.view(n_batch, -1, 1)
             ),
             -1,
         )
@@ -77,12 +72,10 @@ class YOLOLayer(nn.Module):
             # tw: torch.Size([1, 3, 13, 13])
             # th: torch.Size([1, 3, 13, 13])
             # tconf: torch.Size([1, 3, 13, 13])
-            # tcls: torch.Size([1, 3, 13, 13, 80])
-            mask, conf_mask, tx, ty, tw, th, tconf, tcls = build_targets(
+            mask, conf_mask, tx, ty, tw, th, tconf = build_targets(
                 target=targets.cpu().data,
                 anchors=scaled_anchors.cpu().data,
                 num_anchors=self.n_anchors,
-                num_classes=self.num_classes,
                 grid_size=(H, W),  # 这里说明，只有得到预测结果，才能build target
                 ignore_thres=self.ignore_thres
             )
@@ -95,7 +88,6 @@ class YOLOLayer(nn.Module):
             tw = tw.to(device)
             th = th.to(device)
             tconf = tconf.to(device)
-            tcls = tcls.to(device)
 
             # 获取表明gt和非gt的conf_mask
             # 这里 conf_mask_true 指的是具有最佳匹配度的anchor box
@@ -116,12 +108,7 @@ class YOLOLayer(nn.Module):
             ) + self.bce_loss(
                 pred_conf[conf_mask_true], tconf[conf_mask_true]
             )
-
-            # pred_cls[mask]的shape为: [7,80], torch.argmax(tcls[mask], 1)的shape为[7]
-            # CrossEntropyLoss对象的输入为(x,class), 其中x为预测的每个类的概率, class为gt的类别下标
-            loss_cls = (1 / n_batch) * self.ce_loss(pred_cls[mask], torch.argmax(tcls[mask], 1))
-
-            loss = loss_x + loss_y + loss_w + loss_h + loss_conf + loss_cls
+            loss = loss_x + loss_y + loss_w + loss_h + loss_conf
 
             return (
                 loss,
@@ -129,6 +116,5 @@ class YOLOLayer(nn.Module):
                 loss_y.item(),
                 loss_w.item(),
                 loss_h.item(),
-                loss_conf.item(),
-                loss_cls.item()
+                loss_conf.item()
             ), output

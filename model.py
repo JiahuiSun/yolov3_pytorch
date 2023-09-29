@@ -42,9 +42,8 @@ class StackResidualBlock(nn.Module):
 
 
 class Darknet(nn.Module):
-    def __init__(self, num_classes, initial_filters=32):
+    def __init__(self, initial_filters=32):
         super().__init__()
-        self.num_classes = num_classes
         i32 = initial_filters
         i64 = i32 * 2
         i128 = i32 * 4
@@ -75,7 +74,7 @@ class Darknet(nn.Module):
         )
         self.yolo_head1 = nn.Sequential(
             Conv2dUnit(i512, i1024, (3, 3), stride=1, padding=1),
-            nn.Conv2d(i1024, 3*(num_classes + 5), kernel_size=(1, 1))
+            nn.Conv2d(i1024, 3*5, kernel_size=(1, 1))
         )
 
         self.conv7 = Conv2dUnit(i512, i256, (1, 1), stride=1, padding=0)
@@ -89,7 +88,7 @@ class Darknet(nn.Module):
         )
         self.yolo_head2 = nn.Sequential(
             Conv2dUnit(i256, i512, (3, 3), stride=1, padding=1),
-            nn.Conv2d(i512, 3*(num_classes + 5), kernel_size=(1, 1))
+            nn.Conv2d(i512, 3*5, kernel_size=(1, 1))
         )
 
         self.conv8 = Conv2dUnit(i256, i128, (1, 1), stride=1, padding=0)
@@ -103,7 +102,7 @@ class Darknet(nn.Module):
         )
         self.yolo_head3 = nn.Sequential(
             Conv2dUnit(i128, i256, (3, 3), stride=1, padding=1),
-            nn.Conv2d(i256, 3*(num_classes + 5), kernel_size=(1, 1))
+            nn.Conv2d(i256, 3*5, kernel_size=(1, 1))
         )
 
     def forward(self, x):
@@ -131,7 +130,7 @@ class Darknet(nn.Module):
         x = torch.cat((x, feat_downsample8), dim=1)
         downsample8 = self.CBL5_3(x)
         y3 = self.yolo_head3(downsample8)
-        y3 = y3.view(y3.size(0), 3, (self.num_classes + 5), y3.size(2), y3.size(3))  # reshape
+        y3 = y3.view(y3.size(0), 3, 5, y3.size(2), y3.size(3))  # reshape
 
         y3 = y3.permute(0, 1, 3, 4, 2)
         return y3

@@ -13,6 +13,41 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
 
 
+def get_single_detection_annotation(pred, targets, conf_thres=0.5, nms_thres=0.5, img_size=(160, 320)):
+    """
+    先用conf_thres和NMS过滤pred box，再把剩余的pred bbox和target bbox整理对齐，用于计算mAP
+
+    Inputs:
+        pred: shape=[B, N, 5], N是feature map所有的bbox
+        targets: shape=[B, M, 5], M是这种图片上所有的GT bbox
+    Returns:
+        batch_detections: shape=[B, K, 5]
+        batch_annotations: shape=[B, M, 4]
+    """
+    H, W = img_size
+    outputs = nms_single_class(pred, conf_thres=conf_thres, nms_thres=nms_thres)
+
+    batch_detections, batch_annotations = [], []
+    for output, annotations in zip(outputs, targets):
+        pred_boxes = np.array([])
+        if output is not None:
+            sort_i = np.argsort(output[:, 4])  # 按照置信度对bbox从小到大排序
+            pred_boxes = output[sort_i]
+        batch_detections.append(pred_boxes)
+
+        annotation_boxes = np.array([])
+        if any(annotations[:, -1] > 0):  # 但凡存在一个物体
+            _annotation_boxes = annotations[annotations[:, -1] > 0, 1:]
+            # 将box的格式转换成x1,y1,x2,y2的形式, 同时将图片放缩至img_size大小
+            annotation_boxes = np.empty_like(_annotation_boxes)
+            annotation_boxes[:, 0] = (_annotation_boxes[:, 0] - _annotation_boxes[:, 2] / 2) * W
+            annotation_boxes[:, 1] = (_annotation_boxes[:, 1] - _annotation_boxes[:, 3] / 2) * H
+            annotation_boxes[:, 2] = (_annotation_boxes[:, 0] + _annotation_boxes[:, 2] / 2) * W
+            annotation_boxes[:, 3] = (_annotation_boxes[:, 1] + _annotation_boxes[:, 3] / 2) * H
+        batch_annotations.append(annotation_boxes)
+    return batch_detections, batch_annotations
+
+
 def get_detection_annotation(pred, targets, conf_thres=0.5, nms_thres=0.5, num_classes=1, img_size=(160, 320)):
     """
     输入pred bbox和GT bbox，它是一个batch的数据
@@ -63,6 +98,68 @@ def get_detection_annotation(pred, targets, conf_thres=0.5, nms_thres=0.5, num_c
                 one_annotations[label] = annotation_boxes[annotation_labels == label, :]
         batch_annotations.append(one_annotations)
     return batch_detections, batch_annotations
+
+
+def compute_single_AP(all_detections, all_annotations, iou_thres=0.5):
+    """
+    Inputs:
+        all_detections: shape=[N, K, 5]，每张图片有K个bbox，K可能=0
+        all_annotations: shape=[N, M, 4]，每张图片有M个bbox，M可能=0
+    Returns:
+        average precision
+    """
+    true_positives = []
+    scores = []
+    num_annotations = 0
+    # 遍历batch张图片的标注
+    for i in range(len(all_annotations)):
+        detections = all_detections[i]
+        annotations = all_annotations[i]
+        # 全部正例数量
+        num_annotations += annotations.shape[0]
+        detected_annotations = []
+        # 遍历图片中的每个bbox
+        for *bbox, score in detections:
+            scores.append(score)
+
+            if annotations.shape[0] == 0:
+                true_positives.addpend(0) # 当前box并非真正例
+                continue
+
+            # 利用./utils/utils.py文件中的bbox_iou_numpy函数获取交并比矩阵(都是同类的box)
+            overlaps = bbox_iou_numpy(np.array(bbox), annotations)
+            assigned_annotation = np.argmax(overlaps) # 获取最大交并比的下标
+            max_overlap = overlaps[assigned_annotation] # 获取最大交并比
+
+            if max_overlap >= iou_thres and assigned_annotation not in detected_annotations:
+                true_positives.append(1)
+                detected_annotations.append(assigned_annotation)
+            else:
+                true_positives.append(0)
+
+    # 如果没有物体出现在所有图片中, 在当前类的 AP 为 0
+    if num_annotations == 0:
+        AP = 0
+    else:
+        true_positives = np.array(true_positives) # 将列表转化成numpy数组
+        false_positives = np.ones_like(true_positives) - true_positives
+
+        #按照socre进行排序
+        indices = np.argsort(-np.array(scores))
+        false_positives = false_positives[indices]
+        true_positives = true_positives[indices]
+
+        # 统计假正例和真正例
+        false_positives = np.cumsum(false_positives)
+        true_positives = np.cumsum(true_positives)
+
+        # 计算召回率和准确率
+        recall = true_positives / num_annotations
+        precision = true_positives / np.maximum(true_positives + false_positives, np.finfo(np.float64).eps)
+
+        # 调用utils.py文件中的compute_ap函数计算average precision
+        AP = compute_ap(recall, precision)
+    return AP
 
 
 def compute_mAP(all_detections, all_annotations, num_classes=1, iou_thres=0.5):
@@ -130,16 +227,61 @@ def compute_mAP(all_detections, all_annotations, num_classes=1, iou_thres=0.5):
     return average_precisions
 
 
+def nms_single_class(prediction, conf_thres=0.5, nms_thres=0.4):
+    """
+    移除那些置信度低于conf_thres的boxes，在剩余的boxes上执行NMS算法。
+    先选出具有最大score的box，删除与该box交并比大于阈值的box，接着继续选下一个最大socre的box, 重复上述操作，直至bbox为空。
+
+    Inputs: 
+        prediction: shape = (B, 2400, 5), 2400是feature map上anchor box的总数。
+    Returns:
+        output: shape = (B, N, 5)，N是每张图片剩余的bbox
+    """
+    # xywh->xyxy
+    box_corner = np.zeros_like(prediction)
+    box_corner[:, :, 0] = prediction[:, :, 0] - prediction[:, :, 2] / 2
+    box_corner[:, :, 1] = prediction[:, :, 1] - prediction[:, :, 3] / 2
+    box_corner[:, :, 2] = prediction[:, :, 0] + prediction[:, :, 2] / 2
+    box_corner[:, :, 3] = prediction[:, :, 1] + prediction[:, :, 3] / 2
+    prediction[:, :, :4] = box_corner[:, :, :4]
+
+    output = [None for _ in range(len(prediction))]
+    for image_i, image_pred in enumerate(prediction):
+        # 先清除所有置信度小于conf_thres的box
+        detections = image_pred[image_pred[:, 4] >= conf_thres]
+        if not detections.shape[0]:
+            continue
+
+        # 按照每个box的置信度进行排序(第5维代表置信度 score)
+        conf_sort_index = np.argsort(-detections[:, 4])
+        detections = detections[conf_sort_index]
+        max_detections = []
+        while detections.shape[0]:
+            # 将具有最大score的box添加到max_detections列表中,
+            max_detections.append(detections[0])
+            # 当只剩下一个box时, 当前类的nms过程终止
+            if len(detections) == 1:
+                break
+            # 获取当前最大socre的box与其余同类box的iou, 调用了本文件的bbox_iou()函数
+            ious = bbox_iou_numpy(max_detections[-1], detections[1:])
+            # 移除那些交并比大于阈值的box(也即只保留交并比小于阈值的box)
+            detections = detections[1:][ious < nms_thres]
+        # 将执行nms后的剩余的同类box连接起来, 最终shape为[m, 5], m为nms后同类box的数量
+        max_detections = np.stack(max_detections)
+        # 将计算结果添加到output返回值当中, output是一个列表, 列表中的每个元素代表这一张图片的nms后的box
+        output[image_i] = max_detections 
+    return output
+
+
 # nms: 对于每一类(不同类之间的box不执行nms), 先选出具有最大score的box, 删除与该box交并比较大的同类box,
 # 接着继续选下一个最大socre的box, 直至同类box为空, 然后对下一类执行nms
 # 注意yolo与faster rcnn在执行nms算法时的不同, 前者是在多类上执行的, 后者是在两类上执行的
 def non_max_suppression(prediction, num_classes, conf_thres=0.5, nms_thres=0.4):
     # prediction的shape为: [1,10647,85], 其中, 1为batch_size, 10647是尺寸为416的图片的anchor box的总数
-    # num_classes: 80
     # 移除那些置信度低于conf_thres的boxes, 同时在剩余的boxes上执行NMS算法
     # 返回值中box的shape为: (x1, y1, x2, y2, object_conf, class_score, class_pred)
 
-    # 获取box的(x1,x2,y1,y2)坐标
+    # xywh->xyxy
     box_corner = prediction.new(prediction.shape)
     box_corner[:, :, 0] = prediction[:, :, 0] - prediction[:, :, 2] / 2
     box_corner[:, :, 1] = prediction[:, :, 1] - prediction[:, :, 3] / 2
@@ -277,7 +419,7 @@ def bbox_iou(box1, box2, x1y1x2y2=True):
 
 
 def bbox_iou_numpy(rect1, rectangles, x1y1x2y2=True):
-    # 返回 box1 和 box2 的 iou, box1 和 box2 的 shape 要么相同, 要么其中一个为[1,4]
+    # 返回 box1 和 box2 的 iou, box1 和 box2 的 shape 要么相同, 要么为(4,) 和 (B,4)
     if not x1y1x2y2:
         # 获取 box1 和 box2 的左上角和右下角坐标
         rect1 = np.concatenate([rect1[:2]-rect1[2:]/2, rect1[:2]+rect1[2:]/2])
@@ -316,7 +458,7 @@ def bbox_iou_numpy(rect1, rectangles, x1y1x2y2=True):
     return iou
 
 
-def build_targets(target, anchors, num_anchors, num_classes, grid_size, ignore_thres):
+def build_targets(target, anchors, num_anchors, grid_size, ignore_thres):
     # 参数:
     # target: [1, 50, 5]
     # anchors: [3, 2]
@@ -327,7 +469,6 @@ def build_targets(target, anchors, num_anchors, num_classes, grid_size, ignore_t
     # img_dim: 图片尺寸
     nB = target.size(0) # batch_size
     nA = num_anchors # 3
-    nC = num_classes # 80
     H, W = grid_size # 特征图谱的尺寸(eg: 13)
     mask = torch.zeros(nB, nA, H, W) # eg: [1, 3, 13, 13], 代表每个特征图谱上的 anchors 下标(每个 location 都有 3 个 anchors)
     conf_mask = torch.ones(nB, nA, H, W) # eg: [1, 3, 13, 13] 代表每个 anchor 的置信度.
@@ -336,7 +477,6 @@ def build_targets(target, anchors, num_anchors, num_classes, grid_size, ignore_t
     tw = torch.zeros(nB, nA, H, W) # 申请占位空间, 存放每个 anchor 的宽
     th = torch.zeros(nB, nA, H, W) # 申请占位空间, 存放每个 anchor 的高
     tconf = torch.zeros(nB, nA, H, W) # 占位空间, 存放置信度, eg: [1, 3, 13, 13]
-    tcls = torch.zeros(nB, nA, H, W, nC) # 占位空间, 存放分类预测值, eg:[1, 3, 13, 13, 80]
 
     # 对每张图片
     for b in range(nB):
@@ -393,13 +533,8 @@ def build_targets(target, anchors, num_anchors, num_classes, grid_size, ignore_t
             tw[b, best_n, gj, gi] = math.log(gw / anchors[best_n][1] + 1e-16)
             th[b, best_n, gj, gi] = math.log(gh / anchors[best_n][0] + 1e-16)
 
-            # 获取当前 box 的 标签
-            target_label = int(target[b, t, 0])
-            # tcls: [1,3,13,13,80]
-            # 将当前true box对应的 anchor 的正确类别设置为1
-            tcls[b, best_n, gj, gi, target_label] = 1
             # 将置信度设置为 1
             tconf[b, best_n, gj, gi] = 1
 
     # 将所有需要的信息都返回, 从这里可以看出, 每一个 YOLO 层都会执行一次预测.
-    return mask, conf_mask, tx, ty, tw, th, tconf, tcls
+    return mask, conf_mask, tx, ty, tw, th, tconf

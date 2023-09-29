@@ -10,7 +10,7 @@ import numpy as np
 from model import Darknet
 from dataset import ListDataset
 from loss import YOLOLayer
-from utils import set_seed, get_detection_annotation, compute_mAP
+from utils import set_seed, get_single_detection_annotation, compute_single_AP
 
 
 def get_args():
@@ -35,8 +35,7 @@ def get_args():
 
 
 def train(args):
-    num_classes = 1
-    model = Darknet(num_classes, args.init_filter).to(args.device)
+    model = Darknet(args.init_filter).to(args.device)
     summary(model, (3, *args.img_size))
 
     train_dataloader = torch.utils.data.DataLoader(
@@ -47,7 +46,7 @@ def train(args):
     )
     anchors = torch.tensor([[10, 13], [16, 30], [33, 23]])
 
-    YOLOLoss = YOLOLayer(anchors, num_classes, img_dim=args.img_size)
+    YOLOLoss = YOLOLayer(anchors, img_dim=args.img_size)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     for epoch in tqdm(range(args.epochs)):
@@ -65,10 +64,10 @@ def train(args):
             optimizer.step()
             train_loss_list.append(train_loss.item())
 
-            batch_detections, batch_annotations = get_detection_annotation(pred_bbox.data, targets, args.conf_thres, args.nms_thres, num_classes, args.img_size)
+            batch_detections, batch_annotations = get_single_detection_annotation(pred_bbox.data.cpu().numpy(), targets.data.cpu().numpy(), args.conf_thres, args.nms_thres, args.img_size)
             train_detections += batch_detections
             train_annotations += batch_annotations
-        train_average_precisions = compute_mAP(train_detections, train_annotations, num_classes, args.iou_thres)
+        train_average_precision = compute_single_AP(train_detections, train_annotations, args.iou_thres)
 
         val_loss_list = []
         val_annotations, val_detections = [], []
@@ -81,14 +80,14 @@ def train(args):
                 loss_dict, pred_bbox = YOLOLoss(y, targets)
             val_loss = loss_dict[0]
             val_loss_list.append(val_loss.item())
-            batch_detections, batch_annotations = get_detection_annotation(pred_bbox.data, targets, args.conf_thres, args.nms_thres, num_classes, args.img_size)
+            batch_detections, batch_annotations = get_single_detection_annotation(pred_bbox.data.cpu().numpy(), targets.data.cpu().numpy(), args.conf_thres, args.nms_thres, args.img_size)
             val_detections += batch_detections
             val_annotations += batch_annotations
-        val_average_precisions = compute_mAP(val_detections, val_annotations, num_classes, args.iou_thres)
+        val_average_precision = compute_single_AP(val_detections, val_annotations, args.iou_thres)
 
         wandb.log({
-            'mAP_train': train_average_precisions[0],
-            'mAP_val': val_average_precisions[0],
+            'mAP_train': train_average_precision,
+            'mAP_val': val_average_precision,
             'train_loss': np.mean(train_loss_list),
             'val_loss': np.mean(val_loss_list)
         })
