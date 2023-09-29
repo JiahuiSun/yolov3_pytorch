@@ -6,7 +6,7 @@ from tqdm import tqdm
 import wandb
 import numpy as np
 
-from model import Darknet
+from model import Darknet10
 from dataset import ListDataset
 from loss import YOLOLayer
 from utils import set_seed, get_single_detection_annotation, compute_single_AP
@@ -34,7 +34,7 @@ def get_args():
 
 
 def train(args):
-    model = Darknet(args.init_filter).to(args.device)
+    model = Darknet10(args.init_filter).to(args.device)
 
     train_dataloader = torch.utils.data.DataLoader(
         ListDataset(args.data_dir, mode='train'), batch_size=args.batch_size, shuffle=True
