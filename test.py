@@ -4,7 +4,6 @@ from tqdm import tqdm
 import time
 import os
 import torch
-from torchsummary import summary
 import cv2
 
 from model import Darknet
@@ -32,7 +31,6 @@ def get_args():
 
 def test(args):
     model = torch.load(args.model_path, map_location=args.device)
-    summary(model, (3, *args.img_size))
 
     dataloader = torch.utils.data.DataLoader(
         ListDataset(args.data_dir, mode='val'), batch_size=args.batch_size

@@ -2,7 +2,6 @@ import os
 import argparse
 import torch
 import time
-from torchsummary import summary
 from tqdm import tqdm
 import wandb
 import numpy as np
@@ -36,7 +35,6 @@ def get_args():
 
 def train(args):
     model = Darknet(args.init_filter).to(args.device)
-    summary(model, (3, *args.img_size), device=args.device)
 
     train_dataloader = torch.utils.data.DataLoader(
         ListDataset(args.data_dir, mode='train'), batch_size=args.batch_size, shuffle=True
