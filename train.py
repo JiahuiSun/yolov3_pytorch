@@ -6,7 +6,7 @@ from tqdm import tqdm
 import wandb
 import numpy as np
 
-from model import Darknet10
+from model import Darknet
 from dataset import ListDataset
 from loss import YOLOLayer
 from utils import set_seed, get_single_detection_annotation, compute_single_AP
@@ -34,7 +34,7 @@ def get_args():
 
 
 def train(args):
-    model = Darknet10(args.init_filter).to(args.device)
+    model = Darknet(args.init_filter).to(args.device)
 
     train_dataloader = torch.utils.data.DataLoader(
         ListDataset(args.data_dir, mode='train'), batch_size=args.batch_size, shuffle=True
@@ -48,7 +48,7 @@ def train(args):
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     for epoch in tqdm(range(args.epochs)):
-        train_loss_list = []
+        train_loss_list, train_mse_loss_list, train_conf_loss_list, train_ciou_loss_list = [], [], [], []
         train_annotations, train_detections = [], []
         model.train()
         for _, imgs, targets in train_dataloader:
@@ -61,13 +61,19 @@ def train(args):
             train_loss.backward()
             optimizer.step()
             train_loss_list.append(train_loss.item())
+            train_mse_loss_list.append(loss_dict[1])
+            train_conf_loss_list.append(loss_dict[2])
+            train_ciou_loss_list.append(loss_dict[3])
 
-            batch_detections, batch_annotations = get_single_detection_annotation(pred_bbox.data.cpu().numpy(), targets.data.cpu().numpy(), args.conf_thres, args.nms_thres, args.img_size)
+            batch_detections, batch_annotations = get_single_detection_annotation(
+                pred_bbox.data.cpu().numpy(), targets.data.cpu().numpy(), 
+                args.conf_thres, args.nms_thres, args.img_size
+            )
             train_detections += batch_detections
             train_annotations += batch_annotations
         train_average_precision = compute_single_AP(train_detections, train_annotations, args.iou_thres)
 
-        val_loss_list = []
+        val_loss_list, val_mse_loss_list, val_conf_loss_list, val_ciou_loss_list = [], [], [], []
         val_annotations, val_detections = [], []
         model.eval()
         for _, imgs, targets in val_dataloader:
@@ -78,7 +84,14 @@ def train(args):
                 loss_dict, pred_bbox = YOLOLoss(y, targets)
             val_loss = loss_dict[0]
             val_loss_list.append(val_loss.item())
-            batch_detections, batch_annotations = get_single_detection_annotation(pred_bbox.data.cpu().numpy(), targets.data.cpu().numpy(), args.conf_thres, args.nms_thres, args.img_size)
+            val_mse_loss_list.append(loss_dict[1])
+            val_conf_loss_list.append(loss_dict[2])
+            val_ciou_loss_list.append(loss_dict[3])
+
+            batch_detections, batch_annotations = get_single_detection_annotation(
+                pred_bbox.data.cpu().numpy(), targets.data.cpu().numpy(), 
+                args.conf_thres, args.nms_thres, args.img_size
+            )
             val_detections += batch_detections
             val_annotations += batch_annotations
         val_average_precision = compute_single_AP(val_detections, val_annotations, args.iou_thres)
@@ -87,7 +100,13 @@ def train(args):
             'mAP_train': train_average_precision,
             'mAP_val': val_average_precision,
             'train_loss': np.mean(train_loss_list),
-            'val_loss': np.mean(val_loss_list)
+            'train_mse_loss': np.mean(train_mse_loss_list),
+            'train_conf_loss': np.mean(train_conf_loss_list),
+            'train_ciou_loss': np.mean(train_ciou_loss_list),
+            'val_loss': np.mean(val_loss_list),
+            'val_mse_loss': np.mean(val_mse_loss_list),
+            'val_conf_loss': np.mean(val_conf_loss_list),
+            'val_ciou_loss': np.mean(val_ciou_loss_list)
         })
         if (epoch+1) % args.save_freq == 0:
             torch.save(model, os.path.join(args.model_dir, f'model-{epoch}.pth'))

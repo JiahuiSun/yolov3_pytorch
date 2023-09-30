@@ -458,18 +458,17 @@ def bbox_iou_numpy(rect1, rectangles, x1y1x2y2=True):
     return iou
 
 
-def build_targets(target, anchors, num_anchors, grid_size, ignore_thres):
-    # 参数:
+def build_targets(target, anchors, grid_size, img_size):
     # target: [1, 50, 5]
     # anchors: [3, 2]
-    # num_anchors: 3
-    # num_classes: 80
     # grid_size: 13(特征图谱的尺寸)
-    # conf_thres: 0.5
-    # img_dim: 图片尺寸
+    # img_size: 原图大小
+    ignore_thres = 0.5
     nB = target.size(0) # batch_size
-    nA = num_anchors # 3
+    nA = anchors.size(0) # 3
     H, W = grid_size # 特征图谱的尺寸(eg: 13)
+    height, width = img_size
+
     mask = torch.zeros(nB, nA, H, W) # eg: [1, 3, 13, 13], 代表每个特征图谱上的 anchors 下标(每个 location 都有 3 个 anchors)
     conf_mask = torch.ones(nB, nA, H, W) # eg: [1, 3, 13, 13] 代表每个 anchor 的置信度.
     tx = torch.zeros(nB, nA, H, W) # 申请占位空间, 存放每个 anchor 的中心坐标
@@ -477,6 +476,7 @@ def build_targets(target, anchors, num_anchors, grid_size, ignore_thres):
     tw = torch.zeros(nB, nA, H, W) # 申请占位空间, 存放每个 anchor 的宽
     th = torch.zeros(nB, nA, H, W) # 申请占位空间, 存放每个 anchor 的高
     tconf = torch.zeros(nB, nA, H, W) # 占位空间, 存放置信度, eg: [1, 3, 13, 13]
+    txywh = torch.zeros(nB, nA, H, W, 4)
 
     # 对每张图片
     for b in range(nB):
@@ -499,11 +499,11 @@ def build_targets(target, anchors, num_anchors, grid_size, ignore_thres):
             gj = int(gy)
 
             # Get shape of gt box, 根据 box 的大小获取 shape: [1,4]
-            gt_box = torch.tensor(np.array([0, 0, gw, gh])).unsqueeze(0)
+            gt_box = torch.tensor([[0, 0, gw, gh]])
 
             # Get shape of anchor box
             # 相似的方法得到anchor的shape: [3, 4] , 3 代表3个anchor
-            anchor_shapes = torch.tensor(np.concatenate((np.zeros((len(anchors), 2)), np.array(anchors)), 1))
+            anchor_shapes = torch.cat([torch.zeros_like(anchors), anchors], 1)
 
             # 调用本文件的 bbox_iou 函数计算gt_box和anchors之间的交并比
             # 注意这里仅仅计算的是 shape 的交并比, 此处没有考虑位置关系.
@@ -528,13 +528,17 @@ def build_targets(target, anchors, num_anchors, grid_size, ignore_thres):
             # 设置中心坐标, 该坐标是相对于 cell的左上角而言的, 所以是一个小于1的数
             tx[b, best_n, gj, gi] = gx - gi
             ty[b, best_n, gj, gi] = gy - gj
-            # 设置宽和高, 注意, 这里会转化成训练时使用的宽高值
+            # 设置宽和高
             # NOTE: 这里anchor是H, W的顺序，但网络输出按照W, H的顺序
             tw[b, best_n, gj, gi] = math.log(gw / anchors[best_n][1] + 1e-16)
             th[b, best_n, gj, gi] = math.log(gh / anchors[best_n][0] + 1e-16)
 
+            # 获取scale的bbox的xywh
+            txywh[b, best_n, gj, gi, 0] = target[b, t, 1] * width
+            txywh[b, best_n, gj, gi, 1] = target[b, t, 2] * height
+            txywh[b, best_n, gj, gi, 2] = target[b, t, 3] * width
+            txywh[b, best_n, gj, gi, 3] = target[b, t, 4] * height
+
             # 将置信度设置为 1
             tconf[b, best_n, gj, gi] = 1
-
-    # 将所有需要的信息都返回, 从这里可以看出, 每一个 YOLO 层都会执行一次预测.
-    return mask, conf_mask, tx, ty, tw, th, tconf
+    return mask, conf_mask, tx, ty, tw, th, tconf, txywh
