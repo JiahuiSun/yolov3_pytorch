@@ -106,7 +106,8 @@ def train(args):
             'val_loss': np.mean(val_loss_list),
             'val_mse_loss': np.mean(val_mse_loss_list),
             'val_conf_loss': np.mean(val_conf_loss_list),
-            'val_ciou_loss': np.mean(val_ciou_loss_list)
+            'val_ciou_loss': np.mean(val_ciou_loss_list),
+            'lr': optimizer.param_groups[0]['lr']
         })
         if (epoch+1) % args.save_freq == 0:
             torch.save(model, os.path.join(args.model_dir, f'model-{epoch}.pth'))

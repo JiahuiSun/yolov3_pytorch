@@ -170,7 +170,7 @@ class YOLOLayer(nn.Module):
         loss_xywh = loss_x + loss_y + loss_w + loss_h
 
         # ciou loss
-        loss_ciou = self.ciou_loss(pred_bboxes[mask], txywh[mask])
+        loss_ciou = self.ciou_loss(pred_bboxes[mask], txywh[mask], self.img_dim)
 
         # 这里 conf_mask_true 指的是具有最佳匹配度的anchor box
         # conf_mask_false 指的是iou小于0.5的anchor box, 其余的anchor box都被忽略了
