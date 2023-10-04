@@ -13,7 +13,7 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
 
 
-def get_single_detection_annotation(pred, targets, conf_thres=0.5, nms_thres=0.5, img_size=(160, 320)):
+def get_single_cls_detection_annotation(pred, targets, conf_thres=0.5, nms_thres=0.5, img_size=(160, 320)):
     """
     先用conf_thres和NMS过滤pred box，再把剩余的pred bbox和target bbox整理对齐，用于计算mAP
 
@@ -100,7 +100,7 @@ def get_detection_annotation(pred, targets, conf_thres=0.5, nms_thres=0.5, num_c
     return batch_detections, batch_annotations
 
 
-def compute_single_AP(all_detections, all_annotations, iou_thres=0.5):
+def compute_single_cls_ap(all_detections, all_annotations, iou_thres=0.5):
     """
     Inputs:
         all_detections: shape=[N, K, 5]，每张图片有K个bbox，K可能=0
@@ -456,6 +456,69 @@ def bbox_iou_numpy(rect1, rectangles, x1y1x2y2=True):
     iou = intersection_area / union_area
     
     return iou
+
+
+def bbox_ciou(boxes1, boxes2):
+    '''
+    计算ciou = iou - p2/c2 - av
+    :param boxes1: (8, 13, 13, 3, 4)   pred_xywh
+    :param boxes2: (8, 13, 13, 3, 4)   label_xywh
+    :return:
+
+    举例时假设pred_xywh和label_xywh的shape都是(1, 4)
+    '''
+
+    # 变成左上角坐标、右下角坐标
+    boxes1_x0y0x1y1 = torch.cat((boxes1[..., :2] - boxes1[..., 2:] * 0.5,
+                             boxes1[..., :2] + boxes1[..., 2:] * 0.5), dim=-1)
+    boxes2_x0y0x1y1 = torch.cat((boxes2[..., :2] - boxes2[..., 2:] * 0.5,
+                             boxes2[..., :2] + boxes2[..., 2:] * 0.5), dim=-1)
+    '''
+    逐个位置比较boxes1_x0y0x1y1[..., :2]和boxes1_x0y0x1y1[..., 2:]，即逐个位置比较[x0, y0]和[x1, y1]，小的留下。
+    比如留下了[x0, y0]
+    这一步是为了避免一开始w h 是负数，导致x0y0成了右下角坐标，x1y1成了左上角坐标。
+    '''
+    boxes1_x0y0x1y1 = torch.cat((torch.min(boxes1_x0y0x1y1[..., :2], boxes1_x0y0x1y1[..., 2:]),
+                             torch.max(boxes1_x0y0x1y1[..., :2], boxes1_x0y0x1y1[..., 2:])), dim=-1)
+    boxes2_x0y0x1y1 = torch.cat((torch.min(boxes2_x0y0x1y1[..., :2], boxes2_x0y0x1y1[..., 2:]),
+                             torch.max(boxes2_x0y0x1y1[..., :2], boxes2_x0y0x1y1[..., 2:])), dim=-1)
+
+    # 两个矩形的面积
+    boxes1_area = (boxes1_x0y0x1y1[..., 2] - boxes1_x0y0x1y1[..., 0]) * (
+                boxes1_x0y0x1y1[..., 3] - boxes1_x0y0x1y1[..., 1])
+    boxes2_area = (boxes2_x0y0x1y1[..., 2] - boxes2_x0y0x1y1[..., 0]) * (
+                boxes2_x0y0x1y1[..., 3] - boxes2_x0y0x1y1[..., 1])
+
+    # 相交矩形的左上角坐标、右下角坐标，shape 都是 (8, 13, 13, 3, 2)
+    left_up = torch.max(boxes1_x0y0x1y1[..., :2], boxes2_x0y0x1y1[..., :2])
+    right_down = torch.min(boxes1_x0y0x1y1[..., 2:], boxes2_x0y0x1y1[..., 2:])
+
+    # 相交矩形的面积inter_area。iou
+    inter_section = right_down - left_up
+    inter_section = torch.where(inter_section < 0.0, inter_section*0, inter_section)
+    inter_area = inter_section[..., 0] * inter_section[..., 1]
+    union_area = boxes1_area + boxes2_area - inter_area
+    iou = inter_area / (union_area + 1e-9)
+
+    # 包围矩形的左上角坐标、右下角坐标，shape 都是 (8, 13, 13, 3, 2)
+    enclose_left_up = torch.min(boxes1_x0y0x1y1[..., :2], boxes2_x0y0x1y1[..., :2])
+    enclose_right_down = torch.max(boxes1_x0y0x1y1[..., 2:], boxes2_x0y0x1y1[..., 2:])
+
+    # 包围矩形的对角线的平方
+    enclose_wh = enclose_right_down - enclose_left_up
+    enclose_c2 = torch.pow(enclose_wh[..., 0], 2) + torch.pow(enclose_wh[..., 1], 2)
+
+    # 两矩形中心点距离的平方
+    p2 = torch.pow(boxes1[..., 0] - boxes2[..., 0], 2) + torch.pow(boxes1[..., 1] - boxes2[..., 1], 2)
+
+    # 增加av。加上除0保护防止nan。
+    atan1 = torch.atan(boxes1[..., 2] / (boxes1[..., 3] + 1e-9))
+    atan2 = torch.atan(boxes2[..., 2] / (boxes2[..., 3] + 1e-9))
+    v = 4.0 * torch.pow(atan1 - atan2, 2) / (math.pi ** 2)
+    a = v / (1 - iou + v)
+
+    ciou = iou - 1.0 * p2 / enclose_c2 - 1.0 * a * v
+    return ciou
 
 
 def build_targets(target, anchors, grid_size, img_size):

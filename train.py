@@ -9,7 +9,7 @@ import numpy as np
 from model import Darknet
 from dataset import ListDataset
 from loss import YOLOLayer
-from utils import set_seed, get_single_detection_annotation, compute_single_AP
+from utils import set_seed, get_single_cls_detection_annotation, compute_single_cls_ap
 
 
 def get_args():
@@ -57,21 +57,21 @@ def train(args):
             targets = targets.to(args.device)
             y = model(imgs)
             loss_dict, pred_bbox = YOLOLoss(y, targets)
-            train_loss = loss_dict[0]
+            train_loss = loss_dict['loss']
             train_loss.backward()
             optimizer.step()
             train_loss_list.append(train_loss.item())
-            train_mse_loss_list.append(loss_dict[1])
-            train_conf_loss_list.append(loss_dict[2])
-            train_ciou_loss_list.append(loss_dict[3])
+            train_mse_loss_list.append(loss_dict['loss_mse'])
+            train_conf_loss_list.append(loss_dict['loss_conf'])
+            train_ciou_loss_list.append(loss_dict['loss_ciou'])
 
-            batch_detections, batch_annotations = get_single_detection_annotation(
+            batch_detections, batch_annotations = get_single_cls_detection_annotation(
                 pred_bbox.data.cpu().numpy(), targets.data.cpu().numpy(), 
                 args.conf_thres, args.nms_thres, args.img_size
             )
             train_detections += batch_detections
             train_annotations += batch_annotations
-        train_average_precision = compute_single_AP(train_detections, train_annotations, args.iou_thres)
+        train_average_precision = compute_single_cls_ap(train_detections, train_annotations, args.iou_thres)
 
         val_loss_list, val_mse_loss_list, val_conf_loss_list, val_ciou_loss_list = [], [], [], []
         val_annotations, val_detections = [], []
@@ -82,19 +82,19 @@ def train(args):
             with torch.no_grad():
                 y = model(imgs)
                 loss_dict, pred_bbox = YOLOLoss(y, targets)
-            val_loss = loss_dict[0]
+            val_loss = loss_dict['loss']
             val_loss_list.append(val_loss.item())
-            val_mse_loss_list.append(loss_dict[1])
-            val_conf_loss_list.append(loss_dict[2])
-            val_ciou_loss_list.append(loss_dict[3])
+            val_mse_loss_list.append(loss_dict['loss_mse'])
+            val_conf_loss_list.append(loss_dict['loss_conf'])
+            val_ciou_loss_list.append(loss_dict['loss_ciou'])
 
-            batch_detections, batch_annotations = get_single_detection_annotation(
+            batch_detections, batch_annotations = get_single_cls_detection_annotation(
                 pred_bbox.data.cpu().numpy(), targets.data.cpu().numpy(), 
                 args.conf_thres, args.nms_thres, args.img_size
             )
             val_detections += batch_detections
             val_annotations += batch_annotations
-        val_average_precision = compute_single_AP(val_detections, val_annotations, args.iou_thres)
+        val_average_precision = compute_single_cls_ap(val_detections, val_annotations, args.iou_thres)
 
         wandb.log({
             'mAP_train': train_average_precision,
