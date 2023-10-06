@@ -187,3 +187,10 @@ class Darknet10(nn.Module):
 
         y3 = y3.permute(0, 1, 3, 4, 2)
         return y3
+
+
+# 模型汇总
+MODEL_REGISTRY = {
+    'Darknet53': Darknet,
+    'Darknet10': Darknet10
+}

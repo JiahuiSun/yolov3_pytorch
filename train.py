@@ -6,7 +6,7 @@ from tqdm import tqdm
 import wandb
 import numpy as np
 
-from model import Darknet
+from model import MODEL_REGISTRY
 from dataset import ListDataset
 from loss import YOLOLayer
 from utils import set_seed, get_single_cls_detection_annotation, compute_single_cls_ap
@@ -15,6 +15,7 @@ from utils import set_seed, get_single_cls_detection_annotation, compute_single_
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--project_name", type=str, default='YOLOv3')
+    parser.add_argument("--model", type=str, default='Darknet53')
     parser.add_argument("--device", type=int, default=0, help="cpu if <0, or gpu id")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--epochs", type=int, default=100)
@@ -34,7 +35,7 @@ def get_args():
 
 
 def train(args):
-    model = Darknet(args.init_filter).to(args.device)
+    model = MODEL_REGISTRY[args.model](args.init_filter).to(args.device)
 
     train_dataloader = torch.utils.data.DataLoader(
         ListDataset(args.data_dir, mode='train'), batch_size=args.batch_size, shuffle=True
