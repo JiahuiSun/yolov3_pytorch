@@ -6,7 +6,6 @@ import os
 import torch
 import cv2
 
-from model import Darknet
 from loss import YOLOLayer
 from utils import set_seed, compute_single_cls_ap, get_single_cls_detection_annotation, nms_single_class
 from dataset import ListDataset
@@ -19,9 +18,8 @@ def get_args():
     parser.add_argument("--mode", type=str, default="val")
     parser.add_argument("--model_path", type=str, default="output/20230929_112026/model/model-99.pth", help="path to model")
     parser.add_argument("--data_dir", type=str, default="/home/agent/Code/datasets/data_20230626_parallel", help="path to dataset")
-    parser.add_argument("--output_dir", type=str, default="output", help="path to results")
+    parser.add_argument("--output_dir", type=str, default="result", help="path to results")
     parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--iou_thres", type=float, default=0.5, help="iou threshold required to qualify as detected")
     parser.add_argument("--conf_thres", type=float, default=0.5, help="objectiveness confidence threshold")
     parser.add_argument("--nms_thres", type=float, default=0.4, help="iou threshold for non-maximum suppression")
     parser.add_argument("--img_size", type=int, nargs='+', default=[160, 320])
@@ -53,15 +51,15 @@ def test(args):
 
         # 为了画图
         img_path_res += img_path
-        detections = nms_single_class(pred_bbox.clone().cpu().numpy(), args.conf_thres, args.nms_thres)
+        detections = nms_single_class(pred_bbox.cpu().numpy(), args.conf_thres, args.nms_thres)
         detect_res += detections
 
         # 为了计算mAP
         batch_detections, batch_annotations = get_single_cls_detection_annotation(pred_bbox.cpu().numpy(), targets.cpu().numpy(), args.conf_thres, args.nms_thres, args.img_size)
         all_detections += batch_detections
         all_annotations += batch_annotations
-    average_precisions = compute_single_cls_ap(all_detections, all_annotations, args.iou_thres)
-    print(f"mAP: {average_precisions:.3f}, loss: {np.mean(val_loss_list):.3f}")
+    mAPs = compute_single_cls_ap(all_detections, all_annotations)
+    print(f"mAP@0.5: {mAPs[0]:.3f}, mAP@0.5-0.95:{np.mean(mAPs):.3f}, loss: {np.mean(val_loss_list):.3f}")
 
     H, W = args.img_size
     color_pred = (0, 0, 255)  # 红色 (BGR颜色格式)

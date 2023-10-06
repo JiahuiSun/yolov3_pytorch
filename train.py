@@ -25,7 +25,6 @@ def get_args():
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--init_filter", type=int, default=8)
     parser.add_argument("--weight_decay", type=float, default=0.0005)
-    parser.add_argument("--iou_thres", type=float, default=0.5, help="iou threshold required to qualify as detected")
     parser.add_argument("--conf_thres", type=float, default=0.5, help="objectiveness confidence threshold")
     parser.add_argument("--nms_thres", type=float, default=0.4, help="iou threshold for non-maximum suppression")
     parser.add_argument("--img_size", type=int, nargs='+', default=[160, 320])
@@ -72,7 +71,7 @@ def train(args):
             )
             train_detections += batch_detections
             train_annotations += batch_annotations
-        train_average_precision = compute_single_cls_ap(train_detections, train_annotations, args.iou_thres)
+        train_mAPs = compute_single_cls_ap(train_detections, train_annotations)
 
         val_loss_list, val_mse_loss_list, val_conf_loss_list, val_ciou_loss_list = [], [], [], []
         val_annotations, val_detections = [], []
@@ -95,11 +94,13 @@ def train(args):
             )
             val_detections += batch_detections
             val_annotations += batch_annotations
-        val_average_precision = compute_single_cls_ap(val_detections, val_annotations, args.iou_thres)
+        val_mAPs = compute_single_cls_ap(val_detections, val_annotations)
 
         wandb.log({
-            'mAP_train': train_average_precision,
-            'mAP_val': val_average_precision,
+            'mAP_train': train_mAPs[0],
+            'mAP_train@0.5:0.95': np.mean(train_mAPs),
+            'mAP_val': val_mAPs[0],
+            'mAP_val@0.5:0.95': np.mean(val_mAPs),
             'train_loss': np.mean(train_loss_list),
             'train_mse_loss': np.mean(train_mse_loss_list),
             'train_conf_loss': np.mean(train_conf_loss_list),

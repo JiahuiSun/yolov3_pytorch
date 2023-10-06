@@ -17,7 +17,7 @@ def get_single_cls_detection_annotation(pred, targets, conf_thres=0.5, nms_thres
     """
     先用conf_thres和NMS过滤pred box，再把剩余的pred bbox和target bbox整理对齐，用于计算mAP
 
-    Inputs:
+    Arguments:
         pred: shape=[B, N, 5], N是feature map所有的bbox
         targets: shape=[B, M, 5], M是这种图片上所有的GT bbox
     Returns:
@@ -100,66 +100,68 @@ def get_detection_annotation(pred, targets, conf_thres=0.5, nms_thres=0.5, num_c
     return batch_detections, batch_annotations
 
 
-def compute_single_cls_ap(all_detections, all_annotations, iou_thres=0.5):
+def compute_single_cls_ap(all_detections, all_annotations):
     """
     Inputs:
         all_detections: shape=[N, K, 5]，每张图片有K个bbox，K可能=0
         all_annotations: shape=[N, M, 4]，每张图片有M个bbox，M可能=0
     Returns:
-        average precision
+        average precisions from 0.5 to 0.95
     """
-    true_positives = []
-    scores = []
-    num_annotations = 0
-    # 遍历batch张图片的标注
-    for i in range(len(all_annotations)):
-        detections = all_detections[i]
-        annotations = all_annotations[i]
-        # 全部正例数量
-        num_annotations += annotations.shape[0]
-        detected_annotations = []
-        # 遍历图片中的每个bbox
-        for *bbox, score in detections:
-            scores.append(score)
+    iou_thres_list = np.linspace(0.5, 0.95, 10)
+    mAPs = np.zeros_like(iou_thres_list)
+    for idx, iou_thres in enumerate(iou_thres_list):
+        true_positives = []
+        scores = []
+        num_annotations = 0
+        # 遍历batch张图片的标注
+        for i in range(len(all_annotations)):
+            detections = all_detections[i]
+            annotations = all_annotations[i]
+            # 全部正例数量
+            num_annotations += annotations.shape[0]
+            detected_annotations = []
+            # 遍历图片中的每个bbox
+            for *bbox, score in detections:
+                scores.append(score)
 
-            if annotations.shape[0] == 0:
-                true_positives.addpend(0) # 当前box并非真正例
-                continue
+                if annotations.shape[0] == 0:
+                    true_positives.append(0) # 当前box并非真正例
+                    continue
 
-            # 利用./utils/utils.py文件中的bbox_iou_numpy函数获取交并比矩阵(都是同类的box)
-            overlaps = bbox_iou_numpy(np.array(bbox), annotations)
-            assigned_annotation = np.argmax(overlaps) # 获取最大交并比的下标
-            max_overlap = overlaps[assigned_annotation] # 获取最大交并比
+                overlaps = bbox_iou_numpy(np.array(bbox), annotations)
+                assigned_annotation = np.argmax(overlaps) # 获取最大交并比的下标
+                max_overlap = overlaps[assigned_annotation] # 获取最大交并比
 
-            if max_overlap >= iou_thres and assigned_annotation not in detected_annotations:
-                true_positives.append(1)
-                detected_annotations.append(assigned_annotation)
-            else:
-                true_positives.append(0)
+                if max_overlap >= iou_thres and assigned_annotation not in detected_annotations:
+                    true_positives.append(1)
+                    detected_annotations.append(assigned_annotation)
+                else:
+                    true_positives.append(0)
 
-    # 如果没有物体出现在所有图片中, 在当前类的 AP 为 0
-    if num_annotations == 0:
-        AP = 0
-    else:
-        true_positives = np.array(true_positives) # 将列表转化成numpy数组
-        false_positives = np.ones_like(true_positives) - true_positives
+        # 如果没有物体出现在所有图片中, 在当前类的 AP 为 0
+        if num_annotations == 0:
+            AP = 0
+        else:
+            true_positives = np.array(true_positives) # 将列表转化成numpy数组
+            false_positives = np.ones_like(true_positives) - true_positives
 
-        #按照socre进行排序
-        indices = np.argsort(-np.array(scores))
-        false_positives = false_positives[indices]
-        true_positives = true_positives[indices]
+            # 按照socre进行排序
+            indices = np.argsort(-np.array(scores))
+            false_positives = false_positives[indices]
+            true_positives = true_positives[indices]
 
-        # 统计假正例和真正例
-        false_positives = np.cumsum(false_positives)
-        true_positives = np.cumsum(true_positives)
+            # 统计假正例和真正例
+            false_positives = np.cumsum(false_positives)
+            true_positives = np.cumsum(true_positives)
 
-        # 计算召回率和准确率
-        recall = true_positives / num_annotations
-        precision = true_positives / np.maximum(true_positives + false_positives, np.finfo(np.float64).eps)
+            # 计算召回率和准确率
+            recall = true_positives / num_annotations
+            precision = true_positives / np.maximum(true_positives + false_positives, np.finfo(np.float64).eps)
 
-        # 调用utils.py文件中的compute_ap函数计算average precision
-        AP = compute_ap(recall, precision)
-    return AP
+            AP = compute_ap(recall, precision)
+        mAPs[idx] = AP
+    return mAPs
 
 
 def compute_mAP(all_detections, all_annotations, num_classes=1, iou_thres=0.5):
@@ -186,7 +188,7 @@ def compute_mAP(all_detections, all_annotations, num_classes=1, iou_thres=0.5):
                 scores.append(score)
 
                 if annotations.shape[0] == 0:
-                    true_positives.addpend(0) # 当前box并非真正例
+                    true_positives.append(0) # 当前box并非真正例
                     continue
 
                 # 利用./utils/utils.py文件中的bbox_iou_numpy函数获取交并比矩阵(都是同类的box)
@@ -228,11 +230,11 @@ def compute_mAP(all_detections, all_annotations, num_classes=1, iou_thres=0.5):
 
 
 def nms_single_class(prediction, conf_thres=0.5, nms_thres=0.4):
-    """
+    """Non-Maximum Suppression (NMS) on inference results to reject overlapping detections
     移除那些置信度低于conf_thres的boxes，在剩余的boxes上执行NMS算法。
     先选出具有最大score的box，删除与该box交并比大于阈值的box，接着继续选下一个最大socre的box, 重复上述操作，直至bbox为空。
 
-    Inputs: 
+    Arguments: 
         prediction: shape = (B, 2400, 5), 2400是feature map上anchor box的总数。
     Returns:
         output: shape = (B, N, 5)，N是每张图片剩余的bbox
@@ -243,10 +245,10 @@ def nms_single_class(prediction, conf_thres=0.5, nms_thres=0.4):
     box_corner[:, :, 1] = prediction[:, :, 1] - prediction[:, :, 3] / 2
     box_corner[:, :, 2] = prediction[:, :, 0] + prediction[:, :, 2] / 2
     box_corner[:, :, 3] = prediction[:, :, 1] + prediction[:, :, 3] / 2
-    prediction[:, :, :4] = box_corner[:, :, :4]
+    box_corner[:, :, 4] = prediction[:, :, 4]
 
-    output = [None for _ in range(len(prediction))]
-    for image_i, image_pred in enumerate(prediction):
+    output = [None for _ in range(len(box_corner))]
+    for image_i, image_pred in enumerate(box_corner):
         # 先清除所有置信度小于conf_thres的box
         detections = image_pred[image_pred[:, 4] >= conf_thres]
         if not detections.shape[0]:
@@ -419,7 +421,13 @@ def bbox_iou(box1, box2, x1y1x2y2=True):
 
 
 def bbox_iou_numpy(rect1, rectangles, x1y1x2y2=True):
-    # 返回 box1 和 box2 的 iou, box1 和 box2 的 shape 要么相同, 要么为(4,) 和 (B,4)
+    """
+    Arguments:
+        rect1: pred bbox, shape=(4,)
+        rectangles: target bboxes, shape=(B,4) or (4,)
+    Returns:
+        iou: iou between rect1 and each rect in rectangles.
+    """
     if not x1y1x2y2:
         # 获取 box1 和 box2 的左上角和右下角坐标
         rect1 = np.concatenate([rect1[:2]-rect1[2:]/2, rect1[:2]+rect1[2:]/2])
@@ -450,11 +458,7 @@ def bbox_iou_numpy(rect1, rectangles, x1y1x2y2=True):
     area_rectangles = (rectangles[:, 2] - rectangles[:, 0]) * (rectangles[:, 3] - rectangles[:, 1])
     
     # 计算并集区域的面积
-    union_area = area_rect1 + area_rectangles - intersection_area
-    
-    # 计算IoU
-    iou = intersection_area / union_area
-    
+    iou = intersection_area / (area_rect1 + area_rectangles - intersection_area + 1e-16)
     return iou
 
 
@@ -522,10 +526,15 @@ def bbox_ciou(boxes1, boxes2):
 
 
 def build_targets(target, anchors, grid_size, img_size):
-    # target: [1, 50, 5]
-    # anchors: [3, 2]
-    # grid_size: 13(特征图谱的尺寸)
-    # img_size: 原图大小
+    """
+    Arguments:
+        target: GT bboxes, shape=[B, 50, 5]
+        anchors: 3 anchors, each has height and width, shape=[3, 2]
+        grid_size: 特征图谱的尺寸, shape=(20, 40)
+        img_size: 原图大小, shape=(160, 320)
+    Returns:
+        mask, conf_mask, tx, ty, tw, th, tconf, txywh: the targets for anchors to compute loss.
+    """
     ignore_thres = 0.5
     nB = target.size(0) # batch_size
     nA = anchors.size(0) # 3
