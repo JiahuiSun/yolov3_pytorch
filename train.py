@@ -71,7 +71,7 @@ def train(args):
             )
             train_detections += batch_detections
             train_annotations += batch_annotations
-        train_mAPs = compute_single_cls_ap(train_detections, train_annotations)
+        train_AP50 = compute_single_cls_ap(train_detections, train_annotations)
 
         val_loss_list, val_mse_loss_list, val_conf_loss_list, val_ciou_loss_list = [], [], [], []
         val_annotations, val_detections = [], []
@@ -94,13 +94,11 @@ def train(args):
             )
             val_detections += batch_detections
             val_annotations += batch_annotations
-        val_mAPs = compute_single_cls_ap(val_detections, val_annotations)
+        val_AP50 = compute_single_cls_ap(val_detections, val_annotations)
 
         wandb.log({
-            'mAP_train': train_mAPs[0],
-            'mAP_train@0.5:0.95': np.mean(train_mAPs),
-            'mAP_val': val_mAPs[0],
-            'mAP_val@0.5:0.95': np.mean(val_mAPs),
+            'mAP_train': train_AP50,
+            'mAP_val': val_AP50,
             'train_loss': np.mean(train_loss_list),
             'train_mse_loss': np.mean(train_mse_loss_list),
             'train_conf_loss': np.mean(train_conf_loss_list),

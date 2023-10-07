@@ -100,7 +100,7 @@ def get_detection_annotation(pred, targets, conf_thres=0.5, nms_thres=0.5, num_c
     return batch_detections, batch_annotations
 
 
-def compute_single_cls_ap(all_detections, all_annotations):
+def compute_single_cls_ap(all_detections, all_annotations, iou_thres=0.5):
     """
     Inputs:
         all_detections: shape=[N, K, 5]，每张图片有K个bbox，K可能=0
@@ -108,60 +108,56 @@ def compute_single_cls_ap(all_detections, all_annotations):
     Returns:
         average precisions from 0.5 to 0.95
     """
-    iou_thres_list = np.linspace(0.5, 0.95, 10)
-    mAPs = np.zeros_like(iou_thres_list)
-    for idx, iou_thres in enumerate(iou_thres_list):
-        true_positives = []
-        scores = []
-        num_annotations = 0
-        # 遍历batch张图片的标注
-        for i in range(len(all_annotations)):
-            detections = all_detections[i]
-            annotations = all_annotations[i]
-            # 全部正例数量
-            num_annotations += annotations.shape[0]
-            detected_annotations = []
-            # 遍历图片中的每个bbox
-            for *bbox, score in detections:
-                scores.append(score)
+    true_positives = []
+    scores = []
+    num_annotations = 0
+    # 遍历batch张图片的标注
+    for i in range(len(all_annotations)):
+        detections = all_detections[i]
+        annotations = all_annotations[i]
+        # 全部正例数量
+        num_annotations += annotations.shape[0]
+        detected_annotations = []
+        # 遍历图片中的每个bbox
+        for *bbox, score in detections:
+            scores.append(score)
 
-                if annotations.shape[0] == 0:
-                    true_positives.append(0) # 当前box并非真正例
-                    continue
+            if annotations.shape[0] == 0:
+                true_positives.append(0) # 当前box并非真正例
+                continue
 
-                overlaps = bbox_iou_numpy(np.array(bbox), annotations)
-                assigned_annotation = np.argmax(overlaps) # 获取最大交并比的下标
-                max_overlap = overlaps[assigned_annotation] # 获取最大交并比
+            overlaps = bbox_iou_numpy(np.array(bbox), annotations)
+            assigned_annotation = np.argmax(overlaps) # 获取最大交并比的下标
+            max_overlap = overlaps[assigned_annotation] # 获取最大交并比
 
-                if max_overlap >= iou_thres and assigned_annotation not in detected_annotations:
-                    true_positives.append(1)
-                    detected_annotations.append(assigned_annotation)
-                else:
-                    true_positives.append(0)
+            if max_overlap >= iou_thres and assigned_annotation not in detected_annotations:
+                true_positives.append(1)
+                detected_annotations.append(assigned_annotation)
+            else:
+                true_positives.append(0)
 
-        # 如果没有物体出现在所有图片中, 在当前类的 AP 为 0
-        if num_annotations == 0:
-            AP = 0
-        else:
-            true_positives = np.array(true_positives) # 将列表转化成numpy数组
-            false_positives = np.ones_like(true_positives) - true_positives
+    # 如果没有物体出现在所有图片中, 在当前类的 AP 为 0
+    if num_annotations == 0:
+        AP = 0
+    else:
+        true_positives = np.array(true_positives) # 将列表转化成numpy数组
+        false_positives = np.ones_like(true_positives) - true_positives
 
-            # 按照socre进行排序
-            indices = np.argsort(-np.array(scores))
-            false_positives = false_positives[indices]
-            true_positives = true_positives[indices]
+        # 按照socre进行排序
+        indices = np.argsort(-np.array(scores))
+        false_positives = false_positives[indices]
+        true_positives = true_positives[indices]
 
-            # 统计假正例和真正例
-            false_positives = np.cumsum(false_positives)
-            true_positives = np.cumsum(true_positives)
+        # 统计假正例和真正例
+        false_positives = np.cumsum(false_positives)
+        true_positives = np.cumsum(true_positives)
 
-            # 计算召回率和准确率
-            recall = true_positives / num_annotations
-            precision = true_positives / np.maximum(true_positives + false_positives, np.finfo(np.float64).eps)
+        # 计算召回率和准确率
+        recall = true_positives / num_annotations
+        precision = true_positives / np.maximum(true_positives + false_positives, np.finfo(np.float64).eps)
 
-            AP = compute_ap(recall, precision)
-        mAPs[idx] = AP
-    return mAPs
+        AP = compute_ap(recall, precision)
+    return AP
 
 
 def compute_mAP(all_detections, all_annotations, num_classes=1, iou_thres=0.5):

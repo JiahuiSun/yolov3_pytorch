@@ -58,7 +58,12 @@ def test(args):
         batch_detections, batch_annotations = get_single_cls_detection_annotation(pred_bbox.cpu().numpy(), targets.cpu().numpy(), args.conf_thres, args.nms_thres, args.img_size)
         all_detections += batch_detections
         all_annotations += batch_annotations
-    mAPs = compute_single_cls_ap(all_detections, all_annotations)
+    
+    iou_thres_list = np.linspace(0.5, 0.95, 10)
+    mAPs = np.zeros_like(iou_thres_list)
+    for idx, iou_thres in enumerate(iou_thres_list):
+        AP = compute_single_cls_ap(all_detections, all_annotations, iou_thres)
+        mAPs[idx] = AP
     print(f"mAP@0.5: {mAPs[0]:.3f}, mAP@0.5-0.95:{np.mean(mAPs):.3f}, loss: {np.mean(val_loss_list):.3f}")
 
     H, W = args.img_size
