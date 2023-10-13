@@ -5,7 +5,7 @@ import time
 from tqdm import tqdm
 import wandb
 import numpy as np
-
+#from model import Darknet
 from model_attention import Darknet
 from dataset import ListDataset
 from loss import YOLOLayer
@@ -21,7 +21,7 @@ def get_args():
     parser.add_argument("--lr", type=float, default=0.0003)
     parser.add_argument("--data_dir", type=str, default="E:\yolov3\\nlos-20231003", help="path to dataset")
     parser.add_argument("--output_dir", type=str, default="output", help="path to results")
-    parser.add_argument("--batch_size", type=int, default=5)# 128
+    parser.add_argument("--batch_size", type=int, default=2)# 128
     parser.add_argument("--init_filter", type=int, default=8)
     parser.add_argument("--weight_decay", type=float, default=0.0005)
     parser.add_argument("--iou_thres", type=float, default=0.5, help="iou threshold required to qualify as detected")
@@ -35,7 +35,7 @@ def get_args():
 
 def train(args):
     model = Darknet(args.init_filter,args.batch_size).to(args.device)
-
+    #model = Darknet(args.init_filter).to(args.device)
     train_dataloader = torch.utils.data.DataLoader(
         ListDataset(args.data_dir, mode='train'), batch_size=args.batch_size, shuffle=True
     )

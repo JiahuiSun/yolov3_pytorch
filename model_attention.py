@@ -81,7 +81,12 @@ class channelAttention(nn.Module):
 
 
     def forward(self,x):
-        avg_pool = self.avg_pool(x).view(self.batch_size,1,1,self.input_channel) # turn (3,1,1) -> (1,1,3)
+
+        #print('input shape: ',x.shape)
+        avg_pool = self.avg_pool(x)
+        #print('after average pool input: ',avg_pool.shape)
+        avg_pool = avg_pool.view(self.batch_size,1,1,self.input_channel) # turn (3,1,1) -> (1,1,3)
+        #print('after average pool input: ',avg_pool.shape)
         #print('avg_pool: ',avg_pool.shape)
         
         max_pool = self.max_pool(x).view(self.batch_size,1,1,self.input_channel) # turn (3,1,1) -> (1,1,3)
@@ -107,7 +112,7 @@ class channelAttention(nn.Module):
         raw_attention = torch.cat([avg_x,max_x],dim=3) # if input dim = 4 ,dim =3;input dim = 3,dim = 2
         #print('raw_attention: ',raw_attention.shape)
         attention = self.domainAttention(raw_attention)
-        #print('attention: ',attention.shape)
+        #print('inside attention: ',attention.shape)
 
         weight = torch.cat([avg_x,max_x],dim=2) # if input dim = 4 ,dim =2;input dim = 3,dim = 1 
         #print('weight: ',weight.shape)
@@ -168,15 +173,15 @@ class spacialAttention(nn.Module): # SA
         return x
 
 class CAResidualBlock(nn.Module): # CA + ResidualBlock
-    def __init__(self, input_dim, filters,attention_input_channel,batch_size): 
+    def __init__(self, input_dim, filters,batch_size): 
         super().__init__()
         self.batch_size = batch_size
         self.input_channel = input_dim
         self.conv1 = Conv2dUnit(input_dim, filters, (1, 1), stride=1, padding=0)
         self.conv2 = Conv2dUnit(filters, 2*filters, (3, 3), stride=1, padding=1)
-        self.attention_input_channel = attention_input_channel
+        self.attention_input_channel = 2*filters#attention_input_channel
         # self.ResidualBlock = ResidualBlock(input_dim, filters)
-        self.channelAttention = channelAttention(attention_input_channel,batch_size)
+        self.channelAttention = channelAttention(2*filters,batch_size)
     def forward(self, x):
         residual = x
         x = self.conv1(x)
@@ -190,14 +195,14 @@ class CAResidualBlock(nn.Module): # CA + ResidualBlock
         return x
 
 class SAResidualBlock(nn.Module): # SA + ResidualBlock
-    def __init__(self, input_dim, filters,attention_input_channel): 
+    def __init__(self, input_dim, filters): 
         super().__init__()
         
         self.input_channel = input_dim
         self.conv1 = Conv2dUnit(input_dim, filters, (1, 1), stride=1, padding=0)
         self.conv2 = Conv2dUnit(filters, 2*filters, (3, 3), stride=1, padding=1)
         # self.ResidualBlock = ResidualBlock(input_dim, filters)
-        self.spacialAttention = spacialAttention(attention_input_channel)
+        self.spacialAttention = spacialAttention(2*filters)
     def forward(self, x):
         residual = x
         x = self.conv1(x)
@@ -222,14 +227,14 @@ class StackResidualBlock(nn.Module):
         return self.resx(x)
 
 class AttentionStackResidualBlock(nn.Module):
-    def __init__(self, input_dim, filters, n,attention_input_channel,batch_size):
+    def __init__(self, input_dim, filters, n,batch_size):
         super().__init__()
         self.resx = nn.Sequential()
         for i in range(n):
             if i == 0:
-                self.resx.add_module('stack_%d' % (i+1,), SAResidualBlock(input_dim, filters,attention_input_channel))
+                self.resx.add_module('stack_%d' % (i+1,), SAResidualBlock(input_dim, filters))
             else:
-                self.resx.add_module('stack_%d' % (i+1,), CAResidualBlock(input_dim, filters,attention_input_channel,batch_size))
+                self.resx.add_module('stack_%d' % (i+1,), CAResidualBlock(input_dim, filters,batch_size))
             
 
     def forward(self, x):
@@ -254,13 +259,13 @@ class Darknet(nn.Module):
         self.stack_residual_block_2 = StackResidualBlock(i128, i64, n=2)
         self.conv4 = Conv2dUnit(i128, i256, (3, 3), stride=2, padding=1)
         #self.stack_residual_block_3 = StackResidualBlock(i256, i128, n=8)
-        self.stack_residual_block_3 = AttentionStackResidualBlock(i256, i128, n=8,attention_input_channel=256,batch_size=batch_size)
+        self.stack_residual_block_3 = AttentionStackResidualBlock(i256, i128, n=8,batch_size=batch_size)
         self.conv5 = Conv2dUnit(i256, i512, (3, 3), stride=2, padding=1)
         #self.stack_residual_block_4 = StackResidualBlock(i512, i256, n=8)
-        self.stack_residual_block_4 = AttentionStackResidualBlock(i512, i256, n=8,attention_input_channel=512,batch_size=batch_size)
+        self.stack_residual_block_4 = AttentionStackResidualBlock(i512, i256, n=8,batch_size=batch_size)
         self.conv6 = Conv2dUnit(i512, i1024, (3, 3), stride=2, padding=1)
         # self.stack_residual_block_5 = StackResidualBlock(i1024, i512, n=4)
-        self.stack_residual_block_5 = AttentionStackResidualBlock(i1024, i512, n=4,attention_input_channel=1024,batch_size=batch_size)
+        self.stack_residual_block_5 = AttentionStackResidualBlock(i1024, i512, n=4,batch_size=batch_size)
 
         self.CBL5_1 = nn.Sequential(
             AttentionConv2dUnit(i1024, i512, (1, 1), stride=1, padding=0,batch_size=batch_size),
@@ -421,7 +426,7 @@ if __name__ == '__main__':
     model = Darknet(batch_size=5)
     if torch.cuda.is_available():
         model = model.cuda()
-    input = torch.randn(5,3,320,160)
+    input = torch.randn(5,3,160,320)
     if torch.cuda.is_available():
         input = input.cuda()
     model(input)

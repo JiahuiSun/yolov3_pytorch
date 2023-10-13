@@ -44,7 +44,7 @@ if __name__ == '__main__':
     batch_size = 4
     shuffle = True
     num_workers = 4
-    dataset = ListDataset('/home/agent/Code/yolov3_pytorch/annotation/data_parallel', mode='train')
+    dataset = ListDataset("E:\yolov3\\nlos-20231003", mode='train') #"E:\yolov3\nlos-20231003"  '/home/agent/Code/yolov3_pytorch/annotation/data_parallel'
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
 
     for img_paths, images, labels in dataloader:
