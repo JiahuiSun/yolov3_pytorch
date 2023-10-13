@@ -51,6 +51,8 @@ class Darknet(nn.Module):
         i512 = i32 * 16
         i1024 = i32 * 32
 
+        self.CSPDarknet = CSPDarknet(32, 3, 0.5, False)
+
         # darknet53所有卷积层都没有偏移，bias=False
         self.conv1 = Conv2dUnit(3, i32, (3, 3), stride=1, padding=1)
         self.conv2 = Conv2dUnit(i32, i64, (3, 3), stride=2, padding=1)
@@ -106,6 +108,7 @@ class Darknet(nn.Module):
         )
 
     def forward(self, x):
+        """
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.stack_residual_block_1(x)
@@ -117,6 +120,10 @@ class Darknet(nn.Module):
         feat_downsample16 = self.stack_residual_block_4(x)
         x = self.conv6(feat_downsample16)
         feat_downsample32 = self.stack_residual_block_5(x)
+        """
+        feat_downsample8,feat_downsample16,feat_downsample32 = self.CSPDarknet(x)
+
+
 
         downsample32 = self.CBL5_1(feat_downsample32)
 
@@ -145,7 +152,8 @@ class Darknet10(nn.Module):
         i256 = i32 * 8
         i512 = i32 * 16
         i1024 = i32 * 32
-    
+        
+        
         # darknet53所有卷积层都没有偏移，bias=False
         self.conv1 = Conv2dUnit(3, i32, (3, 3), stride=1, padding=1)
         self.conv2 = Conv2dUnit(i32, i64, (3, 3), stride=2, padding=1)
@@ -167,9 +175,10 @@ class Darknet10(nn.Module):
         )
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
+        # x = self.conv1(x)
+        # x = self.conv2(x)
+        # x = self.conv3(x)
+        x = self.CSPDarknet(x)
         feat_downsample8 = self.conv4(x)
         feat_downsample16 = self.conv5(feat_downsample8)
         feat_downsample32 = self.conv6(feat_downsample16)
@@ -190,15 +199,15 @@ class Darknet10(nn.Module):
 
 if __name__ == '__main__':
     from torchsummary import summary
-
+    """
     net_img = CSPDarknet(64, 3, 0.5, False)
     if torch.cuda.is_available():
         net_img = net_img.cuda()
     summary(net_img, (3, 320, 320)) # 416,416 / 320,320
-
+    """
     
-    net_img = Darknet(32)
+    net_img = Darknet(16)
     if torch.cuda.is_available():
         net_img = net_img.cuda()
-    summary(net_img, (3, 320, 320)) # 416,416 / 320,320
+    summary(net_img, (3, 320, 160)) # 416,416 / 320,320
     
