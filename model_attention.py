@@ -21,31 +21,21 @@ class domainAttention(nn.Module): # N,1,1,2C -> N,1,1,2C/S
         super(domainAttention, self).__init__()
         self.input_dim1 = input_dim
         self.output_dim1 = output_dim
-
         self.input_dim2 = self.output_dim1
         self.output_dim2 = 2
-        #print('da input_dim1: ',self.input_dim1)
-        #print('da output_dim1: ',self.output_dim1)
-        #print('da input_dim2: ',self.input_dim2)
-        #print('da output_dim2: ',self.output_dim2)
 
         self.fc1 = nn.Linear(self.input_dim1,self.output_dim1,bias=False)
-        #print('da fc1: ',self.fc1.weight.shape)
         self.relu1 = nn.ReLU()
         self.fc2 = nn.Linear(self.input_dim2,self.output_dim2,bias=False) # N,1,1,2
-        #print('da fc2: ',self.fc2.weight.shape)
+
         self.sigmoid = nn.Softmax(dim=1)
         
     def forward(self,x):
-        #print('x shape: ',x.shape)
+
         x = self.fc1(x)
-        #print('fc1: ',x.shape)
         x = self.relu1(x)
-        #print('relu1: ',x.shape)
         x = self.fc2(x)
-        #print('fc2: ',x.shape)
         x = self.sigmoid(x)
-        #print('sigmoid: ',x.shape)
         return x
 
 class channelAttention(nn.Module):
@@ -82,42 +72,30 @@ class channelAttention(nn.Module):
 
     def forward(self,x):
 
-        #print('input shape: ',x.shape)
+
         avg_pool = self.avg_pool(x)
-        #print('after average pool input: ',avg_pool.shape)
-        avg_pool = avg_pool.view(self.batch_size,1,1,self.input_channel) # turn (3,1,1) -> (1,1,3)
-        #print('after average pool input: ',avg_pool.shape)
-        #print('avg_pool: ',avg_pool.shape)
+        avg_pool = avg_pool.view(self.batch_size,1,1,self.input_channel) 
+
         
         max_pool = self.max_pool(x).view(self.batch_size,1,1,self.input_channel) # turn (3,1,1) -> (1,1,3)
-        #print('max_pool: ',max_pool.shape)
 
         avg_x = self.avg_fc1(avg_pool)
-        #print('avg_x: ',avg_x.shape)
         avg_x = self.avg_relu1(avg_x)
-        #print('avg_x: ',avg_x.shape)
         avg_x = self.avg_fc2(avg_x)
-        #print('avg_x: ',avg_x.shape)
         avg_x = self.avg_sigmoid(avg_x)
-        #print('avg_x: ',avg_x.shape)
         max_x = self.max_fc1(max_pool)
-        #print('max_x: ',max_x.shape)
         max_x = self.max_relu1(max_x)
-        #print('max_x: ',max_x.shape)
         max_x = self.max_fc2(max_x)
-        #print('max_x: ',max_x.shape)
         max_x = self.max_sigmoid(max_x)
-        #print('max_x: ',max_x.shape)
+
     
         raw_attention = torch.cat([avg_x,max_x],dim=3) # if input dim = 4 ,dim =3;input dim = 3,dim = 2
-        #print('raw_attention: ',raw_attention.shape)
         attention = self.domainAttention(raw_attention)
-        #print('inside attention: ',attention.shape)
+
 
         weight = torch.cat([avg_x,max_x],dim=2) # if input dim = 4 ,dim =2;input dim = 3,dim = 1 
-        #print('weight: ',weight.shape)
         x = torch.matmul(attention, weight)
-        #print('x: ',x.shape)
+
         return x
 
 
@@ -131,12 +109,8 @@ class AttentionConv2dUnit(nn.Module): # Conv2d + BN + LeakyReLU + attention
     def forward(self,x):
         
         cbl = self.CBL(x)
-        #print('cbl: ',cbl.shape)
         x = self.attention(cbl)
-        #print('x: ',x.shape)
         x = x.view(self.batch_size,self.attention_input_channel,1,1) * cbl # element-wise multiplication on each channel dim 
-        # x = torch.matmul(cbl,x.view(1,32,1,1))
-        #print('result: ',x.shape)
         return x
             
 
@@ -165,11 +139,9 @@ class spacialAttention(nn.Module): # SA
         self.conv1 = nn.Conv2d(input_dim,int(input_dim/self.compressRate), kernel_size=(1,1), stride=self.stride, padding=0, bias=False)
         self.conv2 = nn.Conv2d(int(input_dim/self.compressRate), 1, kernel_size=(3,3), stride=self.stride, padding=self.padding, bias=False)
     def forward(self,x):
-        #print('spacial input: ',x.shape)
         x = self.conv1(x)
-        #print('spacial conv1: ',x.shape)
         x = self.conv2(x)
-        #print('spacial conv2: ',x.shape)
+
         return x
 
 class CAResidualBlock(nn.Module): # CA + ResidualBlock
@@ -180,16 +152,12 @@ class CAResidualBlock(nn.Module): # CA + ResidualBlock
         self.conv1 = Conv2dUnit(input_dim, filters, (1, 1), stride=1, padding=0)
         self.conv2 = Conv2dUnit(filters, 2*filters, (3, 3), stride=1, padding=1)
         self.attention_input_channel = 2*filters#attention_input_channel
-        # self.ResidualBlock = ResidualBlock(input_dim, filters)
         self.channelAttention = channelAttention(2*filters,batch_size)
     def forward(self, x):
         residual = x
         x = self.conv1(x)
         cbl = self.conv2(x)
-        #print('cbl shape: ',cbl.shape)
-        #print('residual in CA for channel: ',self.attention_input_channel,x.shape)
         x = self.channelAttention(cbl)
-        #print('attention: ',self.attention_input_channel,x.shape)
         x = x.view(self.batch_size,self.input_channel,1,1) * cbl # element-wise multiplication on each channel dim 
         x += residual
         return x
@@ -201,17 +169,13 @@ class SAResidualBlock(nn.Module): # SA + ResidualBlock
         self.input_channel = input_dim
         self.conv1 = Conv2dUnit(input_dim, filters, (1, 1), stride=1, padding=0)
         self.conv2 = Conv2dUnit(filters, 2*filters, (3, 3), stride=1, padding=1)
-        # self.ResidualBlock = ResidualBlock(input_dim, filters)
         self.spacialAttention = spacialAttention(2*filters)
     def forward(self, x):
         residual = x
         x = self.conv1(x)
         cbl = self.conv2(x)
-        #print('cbl shape: ',cbl.shape)
-        #print("residual in SARes: ",residual.shape)
-        # x = self.ResidualBlock(x)
         x = self.spacialAttention(cbl)
-        #print("SA in SARes: ",x.shape)
+
         x = x * cbl # element-wise multiplication on each channel dim  # .view(1,self.input_channel,1,1)
         x += residual
         return x

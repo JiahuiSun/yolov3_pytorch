@@ -41,7 +41,7 @@ class ListDataset(Dataset):
 
 
 if __name__ == '__main__':
-    batch_size = 4
+    batch_size = 2
     shuffle = True
     num_workers = 4
     dataset = ListDataset("E:\yolov3\\nlos-20231003", mode='train') #"E:\yolov3\nlos-20231003"  '/home/agent/Code/yolov3_pytorch/annotation/data_parallel'
