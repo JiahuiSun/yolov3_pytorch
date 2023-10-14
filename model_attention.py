@@ -39,9 +39,8 @@ class domainAttention(nn.Module): # N,1,1,2C -> N,1,1,2C/S
         return x
 
 class channelAttention(nn.Module):
-    def __init__(self,input_channel,batch_size):
+    def __init__(self,input_channel):
         super(channelAttention, self).__init__()
-        self.batch_size = batch_size
         self.input_channel = input_channel
         self.avg_input1 = input_channel
         self.avg_output1 = int(input_channel/2)
@@ -71,10 +70,9 @@ class channelAttention(nn.Module):
 
 
     def forward(self,x):
-        avg_pool = self.avg_pool(x).view(self.batch_size,1,1,self.input_channel) 
-        
-        max_pool = self.max_pool(x).view(self.batch_size,1,1,self.input_channel) # turn (3,1,1) -> (1,1,3)
 
+        avg_pool = self.avg_pool(x).permute(0,3,2,1)
+        max_pool = self.max_pool(x).permute(0,3,2,1) # turn (3,1,1) -> (1,1,3)
         avg_x = self.avg_fc1(avg_pool)
         avg_x = self.avg_relu1(avg_x)
         avg_x = self.avg_fc2(avg_x)
@@ -96,17 +94,17 @@ class channelAttention(nn.Module):
 
 
 class AttentionConv2dUnit(nn.Module): # Conv2d + BN + LeakyReLU + attention
-    def __init__(self, input_dim, filters, kernels, stride, padding,batch_size):
+    def __init__(self, input_dim, filters, kernels, stride, padding):
         super().__init__()
-        self.batch_size = batch_size
         self.CBL = Conv2dUnit(input_dim, filters, kernels, stride, padding)
-        self.attention = channelAttention(filters,self.batch_size) # channel attention unit
+        self.attention = channelAttention(filters) # channel attention unit
         self.attention_input_channel = filters
     def forward(self,x):
         
         cbl = self.CBL(x)
         x = self.attention(cbl)
-        x = x.view(self.batch_size,self.attention_input_channel,1,1) * cbl # element-wise multiplication on each channel dim 
+        x = x.permute(0,3,2,1) * cbl
+        # x = x.view(-1,self.attention_input_channel,1,1) * cbl # element-wise multiplication on each channel dim 
         return x
             
 
@@ -141,20 +139,20 @@ class spacialAttention(nn.Module): # SA
         return x
 
 class CAResidualBlock(nn.Module): # CA + ResidualBlock
-    def __init__(self, input_dim, filters,batch_size): 
+    def __init__(self, input_dim, filters): 
         super().__init__()
-        self.batch_size = batch_size
         self.input_channel = input_dim
         self.conv1 = Conv2dUnit(input_dim, filters, (1, 1), stride=1, padding=0)
         self.conv2 = Conv2dUnit(filters, 2*filters, (3, 3), stride=1, padding=1)
         self.attention_input_channel = 2*filters#attention_input_channel
-        self.channelAttention = channelAttention(2*filters,batch_size)
+        self.channelAttention = channelAttention(2*filters)
     def forward(self, x):
         residual = x
         x = self.conv1(x)
         cbl = self.conv2(x)
         x = self.channelAttention(cbl)
-        x = x.view(self.batch_size,self.input_channel,1,1) * cbl # element-wise multiplication on each channel dim 
+        # x = x.view(-1,self.input_channel,1,1) * cbl # element-wise multiplication on each channel dim 
+        x = x.permute(0,3,2,1) * cbl
         x += residual
         return x
 
@@ -187,14 +185,14 @@ class StackResidualBlock(nn.Module):
         return self.resx(x)
 
 class AttentionStackResidualBlock(nn.Module):
-    def __init__(self, input_dim, filters, n,batch_size):
+    def __init__(self, input_dim, filters, n):
         super().__init__()
         self.resx = nn.Sequential()
         for i in range(n):
             if i == 0:
                 self.resx.add_module('stack_%d' % (i+1,), SAResidualBlock(input_dim, filters))
             else:
-                self.resx.add_module('stack_%d' % (i+1,), CAResidualBlock(input_dim, filters,batch_size))
+                self.resx.add_module('stack_%d' % (i+1,), CAResidualBlock(input_dim, filters))
             
 
     def forward(self, x):
@@ -202,7 +200,7 @@ class AttentionStackResidualBlock(nn.Module):
 
 
 class Darknet(nn.Module):
-    def __init__(self, initial_filters=32,batch_size=1):
+    def __init__(self, initial_filters=32):
         super().__init__()
         i32 = initial_filters
         i64 = i32 * 2
@@ -219,20 +217,20 @@ class Darknet(nn.Module):
         self.stack_residual_block_2 = StackResidualBlock(i128, i64, n=2)
         self.conv4 = Conv2dUnit(i128, i256, (3, 3), stride=2, padding=1)
         #self.stack_residual_block_3 = StackResidualBlock(i256, i128, n=8)
-        self.stack_residual_block_3 = AttentionStackResidualBlock(i256, i128, n=8,batch_size=batch_size)
+        self.stack_residual_block_3 = AttentionStackResidualBlock(i256, i128, n=8)
         self.conv5 = Conv2dUnit(i256, i512, (3, 3), stride=2, padding=1)
         #self.stack_residual_block_4 = StackResidualBlock(i512, i256, n=8)
-        self.stack_residual_block_4 = AttentionStackResidualBlock(i512, i256, n=8,batch_size=batch_size)
+        self.stack_residual_block_4 = AttentionStackResidualBlock(i512, i256, n=8)
         self.conv6 = Conv2dUnit(i512, i1024, (3, 3), stride=2, padding=1)
         # self.stack_residual_block_5 = StackResidualBlock(i1024, i512, n=4)
-        self.stack_residual_block_5 = AttentionStackResidualBlock(i1024, i512, n=4,batch_size=batch_size)
+        self.stack_residual_block_5 = AttentionStackResidualBlock(i1024, i512, n=4)
 
         self.CBL5_1 = nn.Sequential(
-            AttentionConv2dUnit(i1024, i512, (1, 1), stride=1, padding=0,batch_size=batch_size),
-            AttentionConv2dUnit(i512, i1024, (3, 3), stride=1, padding=1,batch_size=batch_size),
-            AttentionConv2dUnit(i1024, i512, (1, 1), stride=1, padding=0,batch_size=batch_size),
-            AttentionConv2dUnit(i512, i1024, (3, 3), stride=1, padding=1,batch_size=batch_size),
-            AttentionConv2dUnit(i1024, i512, (1, 1), stride=1, padding=0,batch_size=batch_size)
+            AttentionConv2dUnit(i1024, i512, (1, 1), stride=1, padding=0),
+            AttentionConv2dUnit(i512, i1024, (3, 3), stride=1, padding=1),
+            AttentionConv2dUnit(i1024, i512, (1, 1), stride=1, padding=0),
+            AttentionConv2dUnit(i512, i1024, (3, 3), stride=1, padding=1),
+            AttentionConv2dUnit(i1024, i512, (1, 1), stride=1, padding=0)
         )
         """
         # FPN+YOLO head
@@ -261,11 +259,11 @@ class Darknet(nn.Module):
         )
         """
         self.CBL5_2 = nn.Sequential(
-            AttentionConv2dUnit(i256+i512, i256, (1, 1), stride=1, padding=0,batch_size=batch_size),
-            AttentionConv2dUnit(i256, i512, (3, 3), stride=1, padding=1,batch_size=batch_size),
-            AttentionConv2dUnit(i512, i256, (1, 1), stride=1, padding=0,batch_size=batch_size),
-            AttentionConv2dUnit(i256, i512, (3, 3), stride=1, padding=1,batch_size=batch_size),
-            AttentionConv2dUnit(i512, i256, (1, 1), stride=1, padding=0,batch_size=batch_size)
+            AttentionConv2dUnit(i256+i512, i256, (1, 1), stride=1, padding=0),
+            AttentionConv2dUnit(i256, i512, (3, 3), stride=1, padding=1),
+            AttentionConv2dUnit(i512, i256, (1, 1), stride=1, padding=0),
+            AttentionConv2dUnit(i256, i512, (3, 3), stride=1, padding=1),
+            AttentionConv2dUnit(i512, i256, (1, 1), stride=1, padding=0)
         )
         self.yolo_head2 = nn.Sequential(
             Conv2dUnit(i256, i512, (3, 3), stride=1, padding=1),
@@ -284,11 +282,11 @@ class Darknet(nn.Module):
         )
         """
         self.CBL5_3 = nn.Sequential(
-            AttentionConv2dUnit(i128+i256, i128, (1, 1), stride=1, padding=0,batch_size=batch_size),
-            AttentionConv2dUnit(i128, i256, (3, 3), stride=1, padding=1,batch_size=batch_size),
-            AttentionConv2dUnit(i256, i128, (1, 1), stride=1, padding=0,batch_size=batch_size),
-            AttentionConv2dUnit(i128, i256, (3, 3), stride=1, padding=1,batch_size=batch_size),
-            AttentionConv2dUnit(i256, i128, (1, 1), stride=1, padding=0,batch_size=batch_size)
+            AttentionConv2dUnit(i128+i256, i128, (1, 1), stride=1, padding=0),
+            AttentionConv2dUnit(i128, i256, (3, 3), stride=1, padding=1),
+            AttentionConv2dUnit(i256, i128, (1, 1), stride=1, padding=0),
+            AttentionConv2dUnit(i128, i256, (3, 3), stride=1, padding=1),
+            AttentionConv2dUnit(i256, i128, (1, 1), stride=1, padding=0)
         )
         self.yolo_head3 = nn.Sequential(
             Conv2dUnit(i128, i256, (3, 3), stride=1, padding=1),
@@ -383,14 +381,14 @@ if __name__ == '__main__':
     from torchsummary import summary
     
     # 验证darknet53
-    model = Darknet(8,batch_size=16)
+    model = Darknet(8)
     if torch.cuda.is_available():
         model = model.cuda()
     input = torch.randn(16,3,160,320)
     if torch.cuda.is_available():
         input = input.cuda()
-    model(input)
-
+    output = model(input)
+    print(output.shape)
 
     """ 
     # 验证domainAttention模块
@@ -435,4 +433,3 @@ if __name__ == '__main__':
         input = input.cuda()
     sa(input)
     """
-
