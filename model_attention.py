@@ -71,11 +71,7 @@ class channelAttention(nn.Module):
 
 
     def forward(self,x):
-
-
-        avg_pool = self.avg_pool(x)
-        avg_pool = avg_pool.view(self.batch_size,1,1,self.input_channel) 
-
+        avg_pool = self.avg_pool(x).view(self.batch_size,1,1,self.input_channel) 
         
         max_pool = self.max_pool(x).view(self.batch_size,1,1,self.input_channel) # turn (3,1,1) -> (1,1,3)
 
@@ -387,10 +383,10 @@ if __name__ == '__main__':
     from torchsummary import summary
     
     # 验证darknet53
-    model = Darknet(batch_size=5)
+    model = Darknet(8,batch_size=16)
     if torch.cuda.is_available():
         model = model.cuda()
-    input = torch.randn(5,3,160,320)
+    input = torch.randn(16,3,160,320)
     if torch.cuda.is_available():
         input = input.cuda()
     model(input)
