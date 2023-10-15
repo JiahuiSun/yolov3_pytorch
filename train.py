@@ -5,8 +5,8 @@ import time
 from tqdm import tqdm
 import wandb
 import numpy as np
-#from model import Darknet
-from model_attention import Darknet
+#from model_attention import Darknet
+from model_separate_attention import Darknet
 from dataset import ListDataset
 from loss import YOLOLayer
 from utils import set_seed, get_single_cls_detection_annotation, compute_single_cls_ap

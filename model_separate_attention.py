@@ -185,20 +185,27 @@ class StackResidualBlock(nn.Module):
     def forward(self, x):
         return self.resx(x)
 
-class AttentionStackResidualBlock(nn.Module):
+class CAttentionStackResidualBlock(nn.Module):
     def __init__(self, input_dim, filters, n):
         super().__init__()
         self.resx = nn.Sequential()
         for i in range(n):
-            if i == 0:
-                self.resx.add_module('stack_%d' % (i+1,), SAResidualBlock(input_dim, filters))
-            else:
-                self.resx.add_module('stack_%d' % (i+1,), CAResidualBlock(input_dim, filters))
+            self.resx.add_module('stack_%d' % (i+1,), CAResidualBlock(input_dim, filters))
             
 
     def forward(self, x):
         return self.resx(x)
 
+class SAttentionStackResidualBlock(nn.Module):
+    def __init__(self, input_dim, filters, n):
+        super().__init__()
+        self.resx = nn.Sequential()
+        for i in range(n):
+            self.resx.add_module('stack_%d' % (i+1,), SAResidualBlock(input_dim, filters))
+            
+
+    def forward(self, x):
+        return self.resx(x)
 
 class Darknet(nn.Module):
     def __init__(self, initial_filters=32):
@@ -213,18 +220,15 @@ class Darknet(nn.Module):
         # darknet53所有卷积层都没有偏移，bias=False
         self.conv1 = Conv2dUnit(3, i32, (3, 3), stride=1, padding=1)
         self.conv2 = Conv2dUnit(i32, i64, (3, 3), stride=2, padding=1)
-        self.stack_residual_block_1 = StackResidualBlock(i64, i32, n=1)
+        self.stack_residual_block_1 = SAttentionStackResidualBlock(i64, i32, n=1)
         self.conv3 = Conv2dUnit(i64, i128, (3, 3), stride=2, padding=1)
-        self.stack_residual_block_2 = StackResidualBlock(i128, i64, n=2)
+        self.stack_residual_block_2 = SAttentionStackResidualBlock(i128, i64, n=2)
         self.conv4 = Conv2dUnit(i128, i256, (3, 3), stride=2, padding=1)
-        #self.stack_residual_block_3 = StackResidualBlock(i256, i128, n=8)
-        self.stack_residual_block_3 = AttentionStackResidualBlock(i256, i128, n=8)
+        self.stack_residual_block_3 = CAttentionStackResidualBlock(i256, i128, n=8)
         self.conv5 = Conv2dUnit(i256, i512, (3, 3), stride=2, padding=1)
-        #self.stack_residual_block_4 = StackResidualBlock(i512, i256, n=8)
-        self.stack_residual_block_4 = AttentionStackResidualBlock(i512, i256, n=8)
+        self.stack_residual_block_4 = CAttentionStackResidualBlock(i512, i256, n=8)
         self.conv6 = Conv2dUnit(i512, i1024, (3, 3), stride=2, padding=1)
-        # self.stack_residual_block_5 = StackResidualBlock(i1024, i512, n=4)
-        self.stack_residual_block_5 = AttentionStackResidualBlock(i1024, i512, n=4)
+        self.stack_residual_block_5 = CAttentionStackResidualBlock(i1024, i512, n=4)
 
         self.CBL5_1 = nn.Sequential(
             AttentionConv2dUnit(i1024, i512, (1, 1), stride=1, padding=0),
@@ -233,16 +237,7 @@ class Darknet(nn.Module):
             AttentionConv2dUnit(i512, i1024, (3, 3), stride=1, padding=1),
             AttentionConv2dUnit(i1024, i512, (1, 1), stride=1, padding=0)
         )
-        """
-        # FPN+YOLO head
-        self.CBL5_1 = nn.Sequential(
-            Conv2dUnit(i1024, i512, (1, 1), stride=1, padding=0),
-            Conv2dUnit(i512, i1024, (3, 3), stride=1, padding=1),
-            Conv2dUnit(i1024, i512, (1, 1), stride=1, padding=0),
-            Conv2dUnit(i512, i1024, (3, 3), stride=1, padding=1),
-            Conv2dUnit(i1024, i512, (1, 1), stride=1, padding=0)
-        )
-        """
+
         self.yolo_head1 = nn.Sequential(
             Conv2dUnit(i512, i1024, (3, 3), stride=1, padding=1),
             nn.Conv2d(i1024, 3*5, kernel_size=(1, 1))
@@ -250,15 +245,7 @@ class Darknet(nn.Module):
 
         self.conv7 = Conv2dUnit(i512, i256, (1, 1), stride=1, padding=0)
         self.upsample1 = nn.Upsample(scale_factor=2, mode='nearest')
-        """
-        self.CBL5_2 = nn.Sequential(
-            Conv2dUnit(i256+i512, i256, (1, 1), stride=1, padding=0),
-            Conv2dUnit(i256, i512, (3, 3), stride=1, padding=1),
-            Conv2dUnit(i512, i256, (1, 1), stride=1, padding=0),
-            Conv2dUnit(i256, i512, (3, 3), stride=1, padding=1),
-            Conv2dUnit(i512, i256, (1, 1), stride=1, padding=0)
-        )
-        """
+
         self.CBL5_2 = nn.Sequential(
             AttentionConv2dUnit(i256+i512, i256, (1, 1), stride=1, padding=0),
             AttentionConv2dUnit(i256, i512, (3, 3), stride=1, padding=1),
@@ -273,15 +260,7 @@ class Darknet(nn.Module):
 
         self.conv8 = Conv2dUnit(i256, i128, (1, 1), stride=1, padding=0)
         self.upsample2 = nn.Upsample(scale_factor=2, mode='nearest')
-        """
-        self.CBL5_3 = nn.Sequential(
-            Conv2dUnit(i128+i256, i128, (1, 1), stride=1, padding=0),
-            Conv2dUnit(i128, i256, (3, 3), stride=1, padding=1),
-            Conv2dUnit(i256, i128, (1, 1), stride=1, padding=0),
-            Conv2dUnit(i128, i256, (3, 3), stride=1, padding=1),
-            Conv2dUnit(i256, i128, (1, 1), stride=1, padding=0)
-        )
-        """
+
         self.CBL5_3 = nn.Sequential(
             AttentionConv2dUnit(i128+i256, i128, (1, 1), stride=1, padding=0),
             AttentionConv2dUnit(i128, i256, (3, 3), stride=1, padding=1),
