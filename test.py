@@ -6,6 +6,7 @@ import os
 import torch
 import cv2
 
+from model import MODEL_REGISTRY
 from loss import YOLOLayer
 from utils import set_seed, compute_single_cls_ap, get_single_cls_detection_annotation, nms_single_class
 from dataset import ListDataset
@@ -14,12 +15,14 @@ from dataset import ListDataset
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", type=int, default=0, help="cpu if <0, or gpu id")
+    parser.add_argument("--model", type=str, default='Darknet53')
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--mode", type=str, default="val")
     parser.add_argument("--model_path", type=str, default="output/20230929_112026/model/model-99.pth", help="path to model")
-    parser.add_argument("--data_dir", type=str, default="/home/agent/Code/datasets/data_20230626_parallel", help="path to dataset")
+    parser.add_argument("--data_dir", type=str, default="/home/agent/Code/ackermann_car_nav/data/rss_mask", help="path to dataset")
     parser.add_argument("--output_dir", type=str, default="result", help="path to results")
     parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--init_filter", type=int, default=32)
     parser.add_argument("--conf_thres", type=float, default=0.5, help="objectiveness confidence threshold")
     parser.add_argument("--nms_thres", type=float, default=0.4, help="iou threshold for non-maximum suppression")
     parser.add_argument("--img_size", type=int, nargs='+', default=[160, 320])
@@ -28,7 +31,8 @@ def get_args():
 
 
 def test(args):
-    model = torch.load(args.model_path, map_location=args.device)
+    model = MODEL_REGISTRY[args.model](args.init_filter).to(args.device)
+    model.load_state_dict(torch.load(args.model_path, map_location=args.device))
 
     dataloader = torch.utils.data.DataLoader(
         ListDataset(args.data_dir, mode=args.mode), batch_size=args.batch_size

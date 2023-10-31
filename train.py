@@ -7,6 +7,7 @@ import wandb
 import numpy as np
 
 from model import MODEL_REGISTRY
+from model_atten import Darknet
 from dataset import ListDataset
 from loss import YOLOLayer
 from utils import set_seed, get_single_cls_detection_annotation, compute_single_cls_ap
@@ -20,10 +21,10 @@ def get_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=0.0003)
-    parser.add_argument("--data_dir", type=str, default="/home/agent/Code/datasets/data_20230626_parallel", help="path to dataset")
+    parser.add_argument("--data_dir", type=str, default="/home/agent/Code/ackermann_car_nav/data/rss_mask", help="path to dataset")
     parser.add_argument("--output_dir", type=str, default="output", help="path to results")
     parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--init_filter", type=int, default=8)
+    parser.add_argument("--init_filter", type=int, default=32)
     parser.add_argument("--weight_decay", type=float, default=0.0005)
     parser.add_argument("--conf_thres", type=float, default=0.5, help="objectiveness confidence threshold")
     parser.add_argument("--nms_thres", type=float, default=0.4, help="iou threshold for non-maximum suppression")
@@ -34,6 +35,7 @@ def get_args():
 
 
 def train(args):
+    # model = Darknet(args.init_filter).to(args.device)
     model = MODEL_REGISTRY[args.model](args.init_filter).to(args.device)
 
     train_dataloader = torch.utils.data.DataLoader(
@@ -51,10 +53,12 @@ def train(args):
         train_loss_list, train_mse_loss_list, train_conf_loss_list, train_ciou_loss_list = [], [], [], []
         train_annotations, train_detections = [], []
         model.train()
-        for _, imgs, targets in train_dataloader:
+        for _, imgs, masks, targets in train_dataloader:
             optimizer.zero_grad()
             imgs = imgs.to(args.device)
+            masks = masks.to(args.device)
             targets = targets.to(args.device)
+            # y = model(imgs, masks)
             y = model(imgs)
             loss_dict, pred_bbox = YOLOLoss(y, targets)
             train_loss = loss_dict['loss']
@@ -76,10 +80,12 @@ def train(args):
         val_loss_list, val_mse_loss_list, val_conf_loss_list, val_ciou_loss_list = [], [], [], []
         val_annotations, val_detections = [], []
         model.eval()
-        for _, imgs, targets in val_dataloader:
+        for _, imgs, masks, targets in val_dataloader:
             imgs = imgs.to(args.device)
+            masks = masks.to(args.device)
             targets = targets.to(args.device)
             with torch.no_grad():
+                # y = model(imgs, masks)
                 y = model(imgs)
                 loss_dict, pred_bbox = YOLOLoss(y, targets)
             val_loss = loss_dict['loss']
@@ -110,7 +116,7 @@ def train(args):
             'lr': optimizer.param_groups[0]['lr']
         })
         if (epoch+1) % args.save_freq == 0:
-            torch.save(model, os.path.join(args.model_dir, f'model-{epoch}.pth'))
+            torch.save(model.state_dict(), os.path.join(args.model_dir, f'model-{epoch}.pth'))
 
 
 if __name__ == '__main__':

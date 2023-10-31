@@ -25,16 +25,17 @@ class ListDataset(Dataset):
         if self.img_fmt:
             img = cv2.imread(img_path) / 255.0
         else:
-            img = np.load(img_path)
-        img = np.transpose(img, (2, 0, 1))  # 将通道维度放置在首位(C,H,W)
-        img = torch.from_numpy(img).float()
+            data = np.load(img_path)
+        data = np.transpose(data, (2, 0, 1))  # 将通道维度放置在首位(C,H,W)
+        data = torch.from_numpy(data).float()
+        img, mask = data[0:1, ...], data[1:2, ...]
 
         lab_path = self.lab_paths[index % len(self.img_paths)]
         labels = np.loadtxt(lab_path).reshape(-1, 5)
         filled_labels = np.zeros((self.max_objects, 5))  # 创建50×5的占位空间
         filled_labels[range(len(labels))[:self.max_objects]] = labels[:self.max_objects]
         filled_labels = torch.from_numpy(filled_labels)
-        return img_path, img, filled_labels
+        return img_path, img, mask, filled_labels
 
     def __len__(self):
         return len(self.img_paths)
