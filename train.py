@@ -7,12 +7,11 @@ import wandb
 import numpy as np
 
 from model import MODEL_REGISTRY
-from model_atten import Darknet
 from dataset import ListDataset
 from loss import YOLOLayer
 from utils import set_seed, get_single_cls_detection_annotation, compute_single_cls_ap
 
-
+# TODO: 两种模型数据集不统一
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--project_name", type=str, default='YOLOv3')
@@ -35,7 +34,6 @@ def get_args():
 
 
 def train(args):
-    # model = Darknet(args.init_filter).to(args.device)
     model = MODEL_REGISTRY[args.model](args.init_filter).to(args.device)
 
     train_dataloader = torch.utils.data.DataLoader(
@@ -54,7 +52,6 @@ def train(args):
         train_annotations, train_detections = [], []
         model.train()
         for _, imgs, masks, targets in train_dataloader:
-            optimizer.zero_grad()
             imgs = imgs.to(args.device)
             masks = masks.to(args.device)
             targets = targets.to(args.device)
@@ -62,6 +59,7 @@ def train(args):
             y = model(imgs)
             loss_dict, pred_bbox = YOLOLoss(y, targets)
             train_loss = loss_dict['loss']
+            optimizer.zero_grad()
             train_loss.backward()
             optimizer.step()
             train_loss_list.append(train_loss.item())

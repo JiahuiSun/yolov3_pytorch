@@ -87,8 +87,8 @@ class CrossAtten(nn.Module):
         return atten_output
 
 
-class Darknet(nn.Module):
-    def __init__(self, initial_filters=32):
+class Darknet53Atten(nn.Module):
+    def __init__(self, initial_filters=32, in_channels=1):
         super().__init__()
         i32 = initial_filters
         i64 = i32 * 2
@@ -98,7 +98,7 @@ class Darknet(nn.Module):
         i1024 = i32 * 32
 
         # darknet53所有卷积层都没有偏移，bias=False
-        self.conv1 = Conv2dUnit(1, i32, (3, 3), stride=1, padding=1)
+        self.conv1 = Conv2dUnit(in_channels, i32, (3, 3), stride=1, padding=1)
         self.conv2 = Conv2dUnit(i32, i64, (3, 3), stride=2, padding=1)
         self.stack_residual_block_1 = StackResidualBlock(i64, i32, n=1)
         self.conv3 = Conv2dUnit(i64, i128, (3, 3), stride=2, padding=1)
@@ -200,7 +200,7 @@ if __name__ == '__main__':
     from torchsummary import summary
 
     device = 'cuda:0'
-    model = Darknet().to(device)
+    model = Darknet53Atten().to(device)
     # summary(model, (3, 160, 320))
 
     data = torch.randn((16, 3, 160, 320)).to(device)
