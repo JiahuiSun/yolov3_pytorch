@@ -8,10 +8,10 @@ import numpy as np
 
 from model import MODEL_REGISTRY
 from dataset import ListDataset
-from loss import YOLOLayer
-from utils import set_seed, get_single_cls_detection_annotation, compute_single_cls_ap
+from loss import YOLOLoss
+from utils import set_seed, nms_single_class, compute_single_cls_ap, preprocess_label
 
-# TODO: 两种模型数据集不统一
+
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--project_name", type=str, default='YOLOv3')
@@ -20,10 +20,11 @@ def get_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=0.0003)
-    parser.add_argument("--data_dir", type=str, default="/home/agent/Code/ackermann_car_nav/data/rss_mask", help="path to dataset")
-    parser.add_argument("--output_dir", type=str, default="output", help="path to results")
+    parser.add_argument("--data_dir", type=str, default="/home/agent/Code/ackermann_car_nav/data/rss_mask")
+    parser.add_argument("--output_dir", type=str, default="output")
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--init_filter", type=int, default=32)
+    parser.add_argument("--in_channels", type=int, default=1)
     parser.add_argument("--weight_decay", type=float, default=0.0005)
     parser.add_argument("--conf_thres", type=float, default=0.5, help="objectiveness confidence threshold")
     parser.add_argument("--nms_thres", type=float, default=0.4, help="iou threshold for non-maximum suppression")
@@ -34,7 +35,7 @@ def get_args():
 
 
 def train(args):
-    model = MODEL_REGISTRY[args.model](args.init_filter).to(args.device)
+    model = MODEL_REGISTRY[args.model](args.init_filter, args.in_channels).to(args.device)
 
     train_dataloader = torch.utils.data.DataLoader(
         ListDataset(args.data_dir, mode='train'), batch_size=args.batch_size, shuffle=True
@@ -44,7 +45,7 @@ def train(args):
     )
     anchors = torch.tensor([[10, 13], [16, 30], [33, 23]])
 
-    YOLOLoss = YOLOLayer(anchors, img_dim=args.img_size)
+    yolo_loss = YOLOLoss(anchors, img_dim=args.img_size)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     for epoch in tqdm(range(args.epochs)):
@@ -57,7 +58,7 @@ def train(args):
             targets = targets.to(args.device)
             # y = model(imgs, masks)
             y = model(imgs)
-            loss_dict, pred_bbox = YOLOLoss(y, targets)
+            loss_dict, pred_bbox = yolo_loss(y, targets)
             train_loss = loss_dict['loss']
             optimizer.zero_grad()
             train_loss.backward()
@@ -67,12 +68,8 @@ def train(args):
             train_conf_loss_list.append(loss_dict['loss_conf'])
             train_ciou_loss_list.append(loss_dict['loss_ciou'])
 
-            batch_detections, batch_annotations = get_single_cls_detection_annotation(
-                pred_bbox.data.cpu().numpy(), targets.data.cpu().numpy(), 
-                args.conf_thres, args.nms_thres, args.img_size
-            )
-            train_detections += batch_detections
-            train_annotations += batch_annotations
+            train_detections += nms_single_class(pred_bbox.data.cpu().numpy(), args.conf_thres, args.nms_thres)
+            train_annotations += preprocess_label(targets.data.cpu().numpy(), args.img_size)
         train_AP50 = compute_single_cls_ap(train_detections, train_annotations)
 
         val_loss_list, val_mse_loss_list, val_conf_loss_list, val_ciou_loss_list = [], [], [], []
@@ -85,19 +82,15 @@ def train(args):
             with torch.no_grad():
                 # y = model(imgs, masks)
                 y = model(imgs)
-                loss_dict, pred_bbox = YOLOLoss(y, targets)
+                loss_dict, pred_bbox = yolo_loss(y, targets)
             val_loss = loss_dict['loss']
             val_loss_list.append(val_loss.item())
             val_mse_loss_list.append(loss_dict['loss_mse'])
             val_conf_loss_list.append(loss_dict['loss_conf'])
             val_ciou_loss_list.append(loss_dict['loss_ciou'])
 
-            batch_detections, batch_annotations = get_single_cls_detection_annotation(
-                pred_bbox.data.cpu().numpy(), targets.data.cpu().numpy(), 
-                args.conf_thres, args.nms_thres, args.img_size
-            )
-            val_detections += batch_detections
-            val_annotations += batch_annotations
+            val_detections += nms_single_class(pred_bbox.data.cpu().numpy(), args.conf_thres, args.nms_thres)
+            val_annotations += preprocess_label(targets.data.cpu().numpy(), args.img_size)
         val_AP50 = compute_single_cls_ap(val_detections, val_annotations)
 
         wandb.log({

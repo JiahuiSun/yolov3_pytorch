@@ -14,7 +14,7 @@ def CIOULoss(pred_bboxes, txywh, img_size=(160, 320)):
     return ciou_loss.mean()
 
 
-class YOLOLayer(nn.Module):
+class YOLOLoss(nn.Module):
     """
     这个类的作用有2个：
         1. 在测试和训练阶段，将网络输出的feature map转换成pred bbox、conf和类别
@@ -32,24 +32,30 @@ class YOLOLayer(nn.Module):
         self.ciou_loss = CIOULoss
 
     def forward(self, prediction, targets=None):
-        # prediction: [1, 3, 13, 13, 85]
-        # targets: [10, 5]
+        """
+        Args:
+            prediction: shape=[B, 3, H, W, n_dim], 3个anchor/grid，HW是feature map大小，n_dim是[xwyh, cls, conf]
+            target: shape=[B, M, 5], M表示图片中的bbox数量
+        Returns:
+            loss_dict (if targets is not None): total loss, ciou_loss, conf_loss, mse_loss
+            output: shape=[B, N, 5], N表示所有在原图上的pred_bbox
+        """
         n_batch, n_anchor, H, W, n_dim = prediction.size()
-        stride = self.img_dim[0] / H # 416 / W = 416 / 13 = 32
+        stride = self.img_dim[0] / H  # 416 / W = 416 / 13 = 32
         device = prediction.device
 
-        x = torch.sigmoid(prediction[..., 0]) # center x: [1, 3, 13, 13]
-        y = torch.sigmoid(prediction[..., 1]) # center y: [1, 3, 13, 13]
-        w = prediction[..., 2] # width: [1, 3, 13, 13]
-        h = prediction[..., 3] # height: [1, 3, 13, 13]
-        pred_conf = torch.sigmoid(prediction[..., 4]) # [1, 3, 13, 13]
+        x = torch.sigmoid(prediction[..., 0])
+        y = torch.sigmoid(prediction[..., 1])
+        w = prediction[..., 2]
+        h = prediction[..., 3]
+        pred_conf = torch.sigmoid(prediction[..., 4])
 
         # grid_x的shape为[1,1,nG,nG], 每一行的元素为:[0,1,2,3,...,nG-1]
         grid_x = torch.arange(W).repeat(H, 1).view([1, 1, H, W]).to(device)
         # grid_y的shape为[1,1,nG,nG], 每一列元素为: [0,1,2,3, ...,nG-1]
         grid_y = torch.arange(H).repeat(W, 1).t().view(1, 1, H, W).to(device)
 
-        # scaled_anchors 是将原图上的 box 大小根据当前特征图谱的大小转换成相应的特征图谱上的 box, shape: [3, 2]
+        # scaled_anchors是根据当前特征图谱的大小转换的
         scaled_anchors = torch.tensor([(a_h / stride, a_w / stride) for a_h, a_w in self.anchors]).to(device)
 
         # 分别获取其 w 和 h, 并将shape形状变为: [1,3,1,1]
@@ -68,14 +74,6 @@ class YOLOLayer(nn.Module):
             return output
         # 如果提供了 targets 标签, 则说明是处于训练阶段
         # 调用 utils.py 文件中的 build_targets 函数, 将真实的 box 数据转化成训练用的数据格式
-        # mask: torch.Size([1, 3, 13, 13])
-        # conf_mask: torch.Size([1, 3, 13, 13])
-        # tx: torch.Size([1, 3, 13, 13])
-        # ty: torch.Size([1, 3, 13, 13])
-        # tw: torch.Size([1, 3, 13, 13])
-        # th: torch.Size([1, 3, 13, 13])
-        # tconf: torch.Size([1, 3, 13, 13])
-        # txywh: (B, 3, 13, 13, 4)
         mask, conf_mask, tx, ty, tw, th, tconf, txywh = build_targets(
             target=targets.data.cpu(),
             anchors=scaled_anchors.data.cpu(),

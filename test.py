@@ -7,8 +7,8 @@ import torch
 import cv2
 
 from model import MODEL_REGISTRY
-from loss import YOLOLayer
-from utils import set_seed, compute_single_cls_ap, get_single_cls_detection_annotation, nms_single_class
+from loss import YOLOLoss
+from utils import set_seed, nms_single_class, compute_single_cls_ap, preprocess_label
 from dataset import ListDataset
 
 
@@ -18,11 +18,12 @@ def get_args():
     parser.add_argument("--model", type=str, default='Darknet53')
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--mode", type=str, default="val")
-    parser.add_argument("--model_path", type=str, default="output/20230929_112026/model/model-99.pth", help="path to model")
-    parser.add_argument("--data_dir", type=str, default="/home/agent/Code/ackermann_car_nav/data/rss_mask", help="path to dataset")
-    parser.add_argument("--output_dir", type=str, default="result", help="path to results")
+    parser.add_argument("--model_path", type=str, default="output/20230929_112026/model/model-99.pth")
+    parser.add_argument("--data_dir", type=str, default="/home/agent/Code/ackermann_car_nav/data/rss_mask")
+    parser.add_argument("--output_dir", type=str, default="result")
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--init_filter", type=int, default=32)
+    parser.add_argument("--in_channels", type=int, default=1)
     parser.add_argument("--conf_thres", type=float, default=0.5, help="objectiveness confidence threshold")
     parser.add_argument("--nms_thres", type=float, default=0.4, help="iou threshold for non-maximum suppression")
     parser.add_argument("--img_size", type=int, nargs='+', default=[160, 320])
@@ -31,7 +32,7 @@ def get_args():
 
 
 def test(args):
-    model = MODEL_REGISTRY[args.model](args.init_filter).to(args.device)
+    model = MODEL_REGISTRY[args.model](args.init_filter, args.in_channels).to(args.device)
     model.load_state_dict(torch.load(args.model_path, map_location=args.device))
 
     dataloader = torch.utils.data.DataLoader(
@@ -39,7 +40,7 @@ def test(args):
     )
     anchors = torch.tensor([[10, 13], [16, 30], [33, 23]])
 
-    YOLOLoss = YOLOLayer(anchors, img_dim=args.img_size)
+    yolo_loss = YOLOLoss(anchors, img_dim=args.img_size)
 
     val_loss_list = []
     all_detections, all_annotations = [], []
@@ -50,7 +51,7 @@ def test(args):
         targets = targets.to(args.device)
         with torch.no_grad():
             y = model(imgs)
-            loss_dict, pred_bbox = YOLOLoss(y, targets)
+            loss_dict, pred_bbox = yolo_loss(y, targets)
         val_loss_list.append(loss_dict['loss'].item())
 
         # 为了画图
@@ -59,9 +60,9 @@ def test(args):
         detect_res += detections
 
         # 为了计算mAP
-        batch_detections, batch_annotations = get_single_cls_detection_annotation(pred_bbox.cpu().numpy(), targets.cpu().numpy(), args.conf_thres, args.nms_thres, args.img_size)
-        all_detections += batch_detections
-        all_annotations += batch_annotations
+        labels = preprocess_label(targets.cpu().numpy(), args.img_size)
+        all_detections += detections
+        all_annotations += labels
     
     iou_thres_list = np.linspace(0.5, 0.95, 10)
     mAPs = np.zeros_like(iou_thres_list)

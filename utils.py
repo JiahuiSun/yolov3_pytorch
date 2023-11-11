@@ -13,11 +13,32 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
 
 
-def get_single_cls_detection_annotation(pred, targets, conf_thres=0.5, nms_thres=0.5, img_size=(160, 320)):
+def preprocess_label(targets, img_size=(160,320)):
+    """取出真正的target，把归一化的target变成原图大小，再从xywh变成xyxy格式
+    Args:
+        targets: (B, N, 5), N is the maximum number of objects in each figure.
+        img_size: 变成原图
+    Returns:
+        batch_annotations: (B, M, 5), M is the number of objects in each figure.
     """
-    先用conf_thres和NMS过滤pred box，再把剩余的pred bbox和target bbox整理对齐，用于计算mAP
+    H, W = img_size
+    batch_annotations = []
+    for target in targets:
+        annotation_boxes = np.array([])
+        if any(target[:, -1] > 0):  # 但凡存在一个物体，把这个物体给取出来
+            target_norm = target[target[:, -1] > 0, 1:]
+            target_norm[..., 0] *= W
+            target_norm[..., 1] *= H
+            target_norm[..., 2] *= W
+            target_norm[..., 3] *= H
+            annotation_boxes = xywh2xyxy(target_norm)
+        batch_annotations.append(annotation_boxes)
+    return batch_annotations
 
-    Arguments:
+
+def get_single_cls_detection_annotation(pred, targets, conf_thres=0.5, nms_thres=0.5, img_size=(160, 320)):
+    """先用conf_thres和NMS过滤pred box，再把剩余的pred bbox和target bbox整理对齐，用于计算mAP
+    Args:
         pred: shape=[B, N, 5], N是feature map所有的bbox
         targets: shape=[B, M, 5], M是这种图片上所有的GT bbox
     Returns:
@@ -225,25 +246,52 @@ def compute_mAP(all_detections, all_annotations, num_classes=1, iou_thres=0.5):
     return average_precisions
 
 
+def xywh2xyxy(pred):
+    """
+    Args:
+        pred: (..., xywh) or (..., xywhc), 把最后一个维度从xywh变成xyxy
+    Returns:
+        output: (..., xyxy) or (..., xyxyc)
+    """
+    if type(pred) is np.ndarray:
+        output = np.copy(pred).astype(np.float32)
+    else:
+        output = torch.clone(pred).float()
+    output[..., :2] = pred[..., :2] - pred[..., 2:4] / 2
+    output[..., 2:4] = pred[..., :2] + pred[..., 2:4] / 2
+    return output
+
+
+def xyxy2xywh(pred):
+    """
+    Args:
+        pred: (..., xyxy) or (..., xyxyc)
+    Returns:
+        output: (..., xywh) or (..., xywhc)
+    """
+    if type(pred) is np.ndarray:
+        output = np.copy(pred).astype(np.float32)
+    else:
+        output = torch.clone(pred).float()
+    output[..., :2] = (pred[..., :2] + pred[..., 2:4]) / 2
+    output[..., 2:4] = (pred[..., 2:4] - pred[..., :2])
+    return output
+
+
 def nms_single_class(prediction, conf_thres=0.5, nms_thres=0.4):
     """Non-Maximum Suppression (NMS) on inference results to reject overlapping detections
     移除那些置信度低于conf_thres的boxes，在剩余的boxes上执行NMS算法。
     先选出具有最大score的box，删除与该box交并比大于阈值的box，接着继续选下一个最大socre的box, 重复上述操作，直至bbox为空。
 
-    Arguments: 
+    Args: 
         prediction: shape = (B, 2400, 5), 2400是feature map上anchor box的总数。
     Returns:
-        output: shape = (B, N, 5)，N是每张图片剩余的bbox
+        output: shape = (B, N, 5)，N是每张图片剩余的bbox，输出格式是xyxy
     """
     # xywh->xyxy
-    box_corner = np.zeros_like(prediction)
-    box_corner[:, :, 0] = prediction[:, :, 0] - prediction[:, :, 2] / 2
-    box_corner[:, :, 1] = prediction[:, :, 1] - prediction[:, :, 3] / 2
-    box_corner[:, :, 2] = prediction[:, :, 0] + prediction[:, :, 2] / 2
-    box_corner[:, :, 3] = prediction[:, :, 1] + prediction[:, :, 3] / 2
-    box_corner[:, :, 4] = prediction[:, :, 4]
+    box_corner = xywh2xyxy(prediction)
 
-    output = [None for _ in range(len(box_corner))]
+    output = [np.array([]) for _ in range(len(box_corner))]
     for image_i, image_pred in enumerate(box_corner):
         # 先清除所有置信度小于conf_thres的box
         detections = image_pred[image_pred[:, 4] >= conf_thres]
@@ -278,14 +326,7 @@ def non_max_suppression(prediction, num_classes, conf_thres=0.5, nms_thres=0.4):
     # prediction的shape为: [1,10647,85], 其中, 1为batch_size, 10647是尺寸为416的图片的anchor box的总数
     # 移除那些置信度低于conf_thres的boxes, 同时在剩余的boxes上执行NMS算法
     # 返回值中box的shape为: (x1, y1, x2, y2, object_conf, class_score, class_pred)
-
-    # xywh->xyxy
-    box_corner = prediction.new(prediction.shape)
-    box_corner[:, :, 0] = prediction[:, :, 0] - prediction[:, :, 2] / 2
-    box_corner[:, :, 1] = prediction[:, :, 1] - prediction[:, :, 3] / 2
-    box_corner[:, :, 2] = prediction[:, :, 0] + prediction[:, :, 2] / 2
-    box_corner[:, :, 3] = prediction[:, :, 1] + prediction[:, :, 3] / 2
-    prediction[:, :, :4] = box_corner[:, :, :4]
+    prediction = xywh2xyxy(prediction)
 
     # len(prediction)为Batch_size, 这里申请了占位空间, 大小为batch_size
     output = [None for _ in range(len(prediction))]
@@ -385,15 +426,10 @@ def compute_ap(recall, precision):
 def bbox_iou(box1, box2, x1y1x2y2=True):
     # 返回 box1 和 box2 的 iou, box1 和 box2 的 shape 要么相同, 要么其中一个为[1,4]
     if not x1y1x2y2:
-        # 获取 box1 和 box2 的左上角和右下角坐标
-        b1_x1, b1_x2 = box1[:, 0] - box1[:, 2] / 2, box1[:, 0] + box1[:, 2] / 2
-        b1_y1, b1_y2 = box1[:, 1] - box1[:, 3] / 2, box1[:, 1] + box1[:, 3] / 2
-        b2_x1, b2_x2 = box2[:, 0] - box2[:, 2] / 2, box2[:, 0] + box2[:, 2] / 2
-        b2_y1, b2_y2 = box2[:, 1] - box2[:, 3] / 2, box2[:, 1] + box2[:, 3] / 2
-    else:
-        # 获取 box1 和 box2 的左上角和右下角坐标
-        b1_x1, b1_y1, b1_x2, b1_y2 = box1[:, 0], box1[:, 1], box1[:, 2], box1[:, 3]
-        b2_x1, b2_y1, b2_x2, b2_y2 = box2[:, 0], box2[:, 1], box2[:, 2], box2[:, 3]
+        box1, box2 = xywh2xyxy(box1), xywh2xyxy(box2)
+    # 获取 box1 和 box2 的左上角和右下角坐标
+    b1_x1, b1_y1, b1_x2, b1_y2 = box1[:, 0], box1[:, 1], box1[:, 2], box1[:, 3]
+    b2_x1, b2_y1, b2_x2, b2_y2 = box2[:, 0], box2[:, 1], box2[:, 2], box2[:, 3]
 
     # 获取相交矩形的左上角和右下角坐标
     # 注意, torch.max 函数要求输入的两个参数要么 shape 相同, 此时在相同位置上进行比较并取最大值
@@ -425,12 +461,8 @@ def bbox_iou_numpy(rect1, rectangles, x1y1x2y2=True):
         iou: iou between rect1 and each rect in rectangles.
     """
     if not x1y1x2y2:
-        # 获取 box1 和 box2 的左上角和右下角坐标
-        rect1 = np.concatenate([rect1[:2]-rect1[2:]/2, rect1[:2]+rect1[2:]/2])
-        rectangles = np.concatenate(
-            [rectangles[:, :2] - rectangles[:, 2:] / 2,
-             rectangles[:, :2] + rectangles[:, 2:] / 2], axis=-1
-        )
+        rect1 = xywh2xyxy(rect1)
+        rectangles = xywh2xyxy(rectangles)
 
     # 计算交集区域的左上角坐标
     x_intersection = np.maximum(rect1[0], rectangles[:, 0])
@@ -522,14 +554,21 @@ def bbox_ciou(boxes1, boxes2):
 
 
 def build_targets(target, anchors, grid_size, img_size):
-    """
-    Arguments:
+    """The targets for anchors to compute loss.
+    Args:
         target: GT bboxes, shape=[B, 50, 5]
         anchors: 3 anchors, each has height and width, shape=[3, 2]
         grid_size: 特征图谱的尺寸, shape=(20, 40)
         img_size: 原图大小, shape=(160, 320)
     Returns:
-        mask, conf_mask, tx, ty, tw, th, tconf, txywh: the targets for anchors to compute loss.
+        mask: torch.Size([1, 3, 13, 13])
+        conf_mask: torch.Size([1, 3, 13, 13])
+        tx: torch.Size([1, 3, 13, 13])
+        ty: torch.Size([1, 3, 13, 13])
+        tw: torch.Size([1, 3, 13, 13])
+        th: torch.Size([1, 3, 13, 13])
+        tconf: torch.Size([1, 3, 13, 13])
+        txywh: (B, 3, 13, 13, 4)
     """
     ignore_thres = 0.5
     nB = target.size(0) # batch_size
